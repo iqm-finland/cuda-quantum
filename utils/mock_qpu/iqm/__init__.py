@@ -32,6 +32,14 @@ in order for tests to succeed. This list can be set at startup by assigning
 a list to the environment variable IQM_MOCK_BAD_PRX_GATES.
 """
 
+bad_cz_gates = []
+"""
+Similar to `bad_qubits_prx` this lists all the CZ gates which should be removed
+from the dynamic quantum architecture to simulate an imperfect calibration.
+This list can be set at startup by assigning a list to the environment variable
+IQM_MOCK_BAD_CZ_GATES.
+"""
+
 qubits = [
     "QB1", "QB2", "QB3", "QB4", "QB5", "QB6", "QB7", "QB8", "QB9", "QB10",
     "QB11", "QB12", "QB13", "QB14", "QB15", "QB16", "QB17", "QB18", "QB19",
@@ -76,13 +84,49 @@ computational_resonators = []
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Once on server start get configuration from the environment."""
-    # Allow setting the list of bad PRX gates via environment variable.
+    """Once on server start get configuration from the environment.
+       Setting the environment variable `IQM_MOCK_BAD_PRX_GATES` with a comma
+       separated list of qubit names will remove these qubits from the list
+       of qubits with PRX functionality in the dynamic quantum architecture.
+       Example: `export IQM_MOCK_BAD_PRX_GATES="QB2,QB5"`
+
+       Setting the environment variable `IQM_MOCK_BAD_CZ_GATES` with a comma
+       separated list of qubit name pairs separated by hyphen will remove
+       matching cz-gates from the list of gates with CZ functionality in the
+       dynamic quantum architecture.
+       Example: `export IQM_MOCK_BAD_CZ_GATES="QB1-QB2,QB5-QB6,QB19-QB20"`
+    """
+
     if ("IQM_MOCK_BAD_PRX_GATES" in environ):
+        # Allow setting the list of bad PRX gates via environment variable.
         bad_qubits_prx.clear()
-        qubits = environ["IQM_MOCK_BAD_PRX_GATES"]
-        for qb in qubits.split(","):
-            bad_qubits_prx.append(qb.strip())
+        gate_list = environ["IQM_MOCK_BAD_PRX_GATES"]
+        for qb in gate_list.split(","):
+            if qb.strip() in qubits:
+                bad_qubits_prx.append(qb.strip())
+
+    for qb in bad_qubits_prx:
+        print(f"No prx-gate possible on: {qb}")
+
+    if ("IQM_MOCK_BAD_CZ_GATES" in environ):
+        # Likewise a list of bad CZ gates can be given.
+        bad_cz_gates.clear()
+        gate_list = environ["IQM_MOCK_BAD_CZ_GATES"]
+        for gate in gate_list.split(","):
+            cz_qubits: list[str] = gate.split("-")
+            if len(cz_qubits) == 2:
+                bad_cz_gates.append(cz_qubits)
+        for gate in bad_cz_gates:
+            if gate in qubit_connectivity:
+                qubit_connectivity.remove(gate)
+                print(f"No cz-gate possible between: {gate[0]}-{gate[1]}")
+            else:
+                reverse_gate: list[str] = gate.copy()
+                reverse_gate.reverse()
+                if reverse_gate in qubit_connectivity:
+                    qubit_connectivity.remove(reverse_gate)
+                    print(f"No cz-gate possible between: "
+                          f"{reverse_gate[0]}-{reverse_gate[1]}")
     yield
 
 

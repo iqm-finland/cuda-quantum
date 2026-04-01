@@ -45,6 +45,9 @@ class IQMServerHelper : public ServerHelper {
   /// @brief Counter to limit the output of the status during polling
   uint statusOutputRateLimit = 0;
 
+  /// @brief Number of total qubits on the addressed QPU
+  uint qubitCountStaticArch;
+
 protected:
   /// @brief The base URL
   std::string iqmServerUrl = "http://localhost/";
@@ -100,6 +103,9 @@ protected:
 
   /// @brief Fetch the quantum architecture from server
   void fetchQuantumArchitecture();
+
+  /// @brief Reduce the topology to a single network
+  void fixupTopology();
 
   /// @brief Write the dynamic quantum architecture file
   std::string writeQuantumArchitectureFile(void);
@@ -241,7 +247,8 @@ IQMServerHelper::createJob(std::vector<KernelExecution> &circuitCodes) {
     message["circuits"] = ServerMessage::array();
     message["shots"] = shots;
 
-    if (qubitNameMap.size() > 0) {
+    // Only add mapping if qubits were erased from the quantum architecture.
+    if (qubitNameMap.size() != qubitCountStaticArch) {
       // Apply the mapping derived from the dynamic quantum architecture.
       message["qubit_mapping"] = ServerMessage::array();
       for (auto &[key, value] : qubitNameMap) {
@@ -425,6 +432,7 @@ void IQMServerHelper::updatePassPipeline(
     } else {
       // Use the dynamic quantum architecture of the configured IQM server
       fetchQuantumArchitecture();
+      fixupTopology();
       pathToFile = writeQuantumArchitectureFile();
     }
   }
@@ -481,7 +489,7 @@ void IQMServerHelper::fetchQuantumArchitecture() {
     for (auto qubit : dynamicQuantumArchitecture["qubits"]) {
       qubitNameMap[qubit] = 0; // initializing to zero meaning no capability
     }
-    uint qubitCountStaticArch = qubitNameMap.size();
+    qubitCountStaticArch = qubitNameMap.size();
     for (auto &cz_implementation : cz["implementations"]) {
       auto &cz_loci = cz_implementation["loci"];
       for (auto cz : cz_loci) {
@@ -542,17 +550,148 @@ void IQMServerHelper::fetchQuantumArchitecture() {
       } // for all cz loci
     }   // for all implementations
 
-    // If no qubits were erased no mapping is needed. By clearing it here it
-    // will not be appended to the job.
-    if (qubitNameMap.size() == qubitCountStaticArch) {
-      qubitNameMap.clear();
-    }
   } catch (const std::exception &e) {
     throw std::runtime_error("Unable to get quantum architecture of \"" +
                              iqmQC + "\" from \"" + iqmServerUrl +
                              "\": " + std::string(e.what()));
   }
 } // IQMServerHelper::fetchQuantumArchitecture()
+
+/**
+ * Check for a split topology and if multiple networks exist remove all but one.
+ *
+ * The network remaining is either the one with the most nodes or if there is
+ * a tie the one containing the qubit with the smallest index number.
+ */
+void IQMServerHelper::fixupTopology() {
+  uint qubitCount = qubitAdjacencyMap.size();
+  std::vector<uint> networkId;
+  uint i, j;
+
+  // Initially each qubit is a separate net and gets an own ID.
+  networkId.reserve(qubitCount);
+  for (i = 0; i < qubitCount; i++) {
+    networkId.push_back(i);
+  }
+
+  // Iterate over the adjacency map and assign the same network ID to qubits
+  // which are direct neighbours.
+  uint touchedMaxQubit = 0;
+  for (i = 0; i < qubitCount; i++) {
+    for (auto j : qubitAdjacencyMap[i]) {
+      // Only one direction of every connection needs to be checked.
+      if (j > i) {
+        // CUDAQ_DBG("qubit {} has nb {}", i, j);
+        if (touchedMaxQubit < j) {
+          touchedMaxQubit = j;
+        }
+        if (networkId[i] == networkId[j]) {
+          // qubits already belong to the same network -> nothing to do
+          continue;
+        }
+
+        // The lowest network id of both qubits will be used as id for
+        // the merged network.
+        uint newNetId = std::min(networkId[i], networkId[j]);
+
+        // If the network id of the neighboring qubit is already modified all
+        // id's of this network need to be found and replaced.
+        if (networkId[j] != j) {
+          uint prevNet = networkId[j];
+          // Check all qubits touched so far.
+          for (uint k = 0; k < touchedMaxQubit; k++)
+            if (networkId[k] == prevNet)
+              networkId[k] = newNetId;
+        }
+
+        // Set the same network id to both qubits.
+        networkId[i] = networkId[j] = newNetId;
+      }
+    }
+  }
+
+#ifdef CUDAQ_DEBUG
+  std::string listNetworkId = "";
+  for (i = 0; i < qubitCount; i++) {
+    listNetworkId += std::to_string(networkId[i]) + ", ";
+  }
+  CUDAQ_DBG("Network id's: {}", listNetworkId);
+#endif
+
+  /* Assumption is that there is a single contiguous network or not more than
+     very few networks. This led to choosing a map for counting the qubits in
+     each network. Drawback is that the map cannot be ordered by it's value
+     but since we assume a few entries only iterating over them is fast. */
+
+  // Count the number of qubits belonging to each network.
+  std::map<uint, uint> nodeCnt;
+  for (i = 0; i < qubitCount; i++) {
+    nodeCnt[networkId[i]] += 1;
+  }
+
+  // Find the network with the largest number of qubits.
+  uint maxCnt = 0, netId = 0;
+  for (auto &[key, value] : nodeCnt) {
+    CUDAQ_DBG("Network id {} has {} qubits", key, value);
+    if (maxCnt < value) {
+      maxCnt = value;
+      netId = key;
+    }
+  }
+
+  if (nodeCnt.size() > 1) {
+    CUDAQ_INFO("Split topology detected! {} networks found.", nodeCnt.size());
+    CUDAQ_DBG("Selected network id {} with {} qubits", netId, maxCnt);
+
+    // Keep only the largest Network and drop all the other ones.
+
+    for (i = qubitCount; i > 0; i--) {
+      if (networkId[i - 1] != netId) {
+        qubitAdjacencyMap.erase(qubitAdjacencyMap.begin() + (i - 1));
+      }
+    }
+
+    uint idx = 0; // enumeration counter
+    auto qubit = qubitNameMap.begin();
+    for (i = 0; qubit != qubitNameMap.end(); i++) {
+      if (networkId[i] == netId) {
+        qubit->second = idx++;
+        qubit++;
+      } else {
+        CUDAQ_DBG("dropping {}", qubit->first);
+        qubit = qubitNameMap.erase(qubit);
+      }
+    }
+
+    /* After erasing elements from the vectors with the results the sets with
+       the indexes of the qubit neighbours need to be adjusted.
+       The vector used above for counting the qubits is reused and prepared
+       here as a lookup table for translating the initial qubit enumeration to
+       the actual one. */
+    for (i = j = 0; i < qubitCount; i++) {
+      if (networkId[i] == netId) {
+        // CUDAQ_DBG("qubit id {} -> {}", i, j);
+        networkId[i] = j++;
+      }
+    }
+
+    // After removing elements above get the new size here.
+    qubitCount = qubitAdjacencyMap.size();
+    CUDAQ_INFO("Reduced topology to largest network with {} qubit", qubitCount);
+
+    // Translate the neighbour index numbers
+    std::set<uint> neighbours;
+    for (i = 0; i < qubitCount; i++) {
+      // CUDAQ_DBG("qubit {}", i);
+      neighbours.clear();
+      for (uint nb : qubitAdjacencyMap[i]) {
+        // CUDAQ_DBG(" nb {}", nb);
+        neighbours.insert(networkId[nb]);
+      }
+      qubitAdjacencyMap[i] = neighbours;
+    }
+  }
+}
 
 /**
  * Write the content of the dynamic quantum architecture to file.
@@ -621,7 +760,7 @@ std::string IQMServerHelper::writeQuantumArchitectureFile(void) {
     fwrite(outputLine.c_str(), outputLine.length(), 1, file);
   }
 
-  if (qubitNameMap.size() > 0) {
+  if (qubitNameMap.size() != qubitCountStaticArch) {
     fprintf(file, "\n# Mapping to physical qubit tags for IQM backend\n");
 
     outputLine = "# IQM qubit map:";
