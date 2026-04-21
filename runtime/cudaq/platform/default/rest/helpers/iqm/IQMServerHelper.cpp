@@ -89,6 +89,9 @@ protected:
     return tokens["access_token"].get<std::string>();
   }
 
+  /// @brief Calibration-set ID from the dynamic quantum architecture
+  std::string calibration_set_id = "";
+
   /// @brief Lookup table for translating the qubit names to index numbers
   std::map<std::string, uint, qubitOrder> qubitNameMap;
 
@@ -326,12 +329,22 @@ bool IQMServerHelper::jobIsDone(ServerMessage &getJobResponse) {
 cudaq::sample_result
 IQMServerHelper::processResults(ServerMessage &postJobResponse,
                                 std::string &jobID) {
-  // check if the job succeeded
-  auto jobStatus = postJobResponse["status"].get<std::string>();
+  std::string jobStatus = postJobResponse["status"].get<std::string>();
+
   if (jobStatus != "completed") {
-    // Use only the first message (index 0) to report the error.
-    auto jobMessage =
-        postJobResponse["messages"][0]["message"].get<std::string>();
+    // all but "completed" is considered an error
+    std::string jobMessage;
+    // If the error element is returned use the first message from this array.
+    if (postJobResponse.contains("errors")) {
+      jobMessage = postJobResponse["errors"][0]["message"].get<std::string>();
+    }
+    if (jobMessage.empty()) {
+      // Fallback to the message element which is mandatory in the response.
+      // Also here use only the first message (index 0) to report the error.
+      jobMessage = (postJobResponse["messages"].size() > 0) ?
+        postJobResponse["messages"][0]["message"].get<std::string>() : "none";
+    }
+    CUDAQ_INFO("Server message: {}", jobMessage);
     throw std::runtime_error("Job status: " + jobStatus +
                              ", reason: " + jobMessage);
   }
@@ -470,7 +483,9 @@ void IQMServerHelper::fetchQuantumArchitecture() {
                        "/default/dynamic-quantum-architecture",
                    headers);
 
-    CUDAQ_DBG("Dynamic QA={}", dynamicQuantumArchitecture.dump());
+    CUDAQ_INFO("Dynamic QA={}", dynamicQuantumArchitecture.dump());
+
+    calibration_set_id = dynamicQuantumArchitecture["calibration_set_id"];
 
     auto &cz = dynamicQuantumArchitecture["gates"]["cz"];
 
@@ -580,11 +595,8 @@ void IQMServerHelper::fixupTopology() {
   for (i = 0; i < qubitCount; i++) {
     for (auto j : qubitAdjacencyMap[i]) {
       // Only one direction of every connection needs to be checked.
-      if (j > i) {
+      if (i < j) {
         // CUDAQ_DBG("qubit {} has nb {}", i, j);
-        if (touchedMaxQubit < j) {
-          touchedMaxQubit = j;
-        }
         if (networkId[i] == networkId[j]) {
           // qubits already belong to the same network -> nothing to do
           continue;
@@ -595,17 +607,23 @@ void IQMServerHelper::fixupTopology() {
         uint newNetId = std::min(networkId[i], networkId[j]);
 
         // If the network id of the neighboring qubit is already modified all
-        // id's of this network need to be found and replaced.
+        // touched qubits need to be checked for the network id to be replaced
+        // and this then substituted with the id chosen for the merged network.
         if (networkId[j] != j) {
-          uint prevNet = networkId[j];
-          // Check all qubits touched so far.
-          for (uint k = 0; k < touchedMaxQubit; k++)
-            if (networkId[k] == prevNet)
+          uint prevNetId = std::max(networkId[i], networkId[j]);
+          for (uint k = 0; k <= touchedMaxQubit; k++) {
+            if (networkId[k] == prevNetId) {
               networkId[k] = newNetId;
+            }
+          }
         }
 
         // Set the same network id to both qubits.
         networkId[i] = networkId[j] = newNetId;
+
+        if (touchedMaxQubit < j) {
+          touchedMaxQubit = j;
+        }
       }
     }
   }
@@ -725,6 +743,7 @@ std::string IQMServerHelper::writeQuantumArchitectureFile(void) {
                              quantumArchitectureFilePath + "\" - " +
                              std::string(strerror(errno)));
   }
+  ftruncate(fd, 0);
   // open also as FILE which allows easier formatting with fprintf()
   FILE *file = fdopen(fd, "w");
   if (file == NULL) {
@@ -735,9 +754,9 @@ std::string IQMServerHelper::writeQuantumArchitectureFile(void) {
 
   // Header
   fprintf(file,
-          "# NOTE: automatically generated for quantum computer \"%s\" at "
-          "IQM server URL: %s\n\n",
-          iqmQC.c_str(), iqmServerUrl.c_str());
+          "# Automatically generated from calibration-set \"%s\" "
+          "for quantum computer \"%s\" at IQM server URL: %s\n\n",
+          calibration_set_id.c_str(), iqmQC.c_str(), iqmServerUrl.c_str());
   fprintf(file, "Number of nodes: %u\n", qubitCount);
   fprintf(file, "Number of edges: ?\n\n");
 

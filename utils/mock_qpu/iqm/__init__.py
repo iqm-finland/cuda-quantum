@@ -477,13 +477,15 @@ async def get_job_status(job_id: str, request: Request):
 
     results = {
         # Note: this is a subset of what a real server would return.
-        "messages": {
-            "message":
-                job.result.message
-                if job.result and job.result.message else None,
-            "source":
-                "iqm-server"
-        },
+        "messages": [
+            {
+                "message":
+                    job.result.message
+                    if job.result and job.result.message else None,
+                "source":
+                    "iqm-server"
+            }
+        ],
         "queue_position":
             1,
         "runtime_ms":
