@@ -1,7 +1,7 @@
 /*******************************************************************************
  * Copyright (c) 2022 - 2026 NVIDIA Corporation & Affiliates.                  *
  * All rights reserved.                                                        *
- * Copyright 2025 IQM Quantum Computers                                        *
+ * Copyright 2025-2026 IQM Quantum Computers                                   *
  *                                                                             *
  * This source code and the accompanying materials are made available under    *
  * the terms of the Apache License 2.0 which accompanies this distribution.    *
@@ -203,6 +203,8 @@ void IQMServerHelper::initialize(BackendConfig config) {
     quantumArchitectureFilePath = std::string(token);
     cleanupQuantumArchitectureFilePath = false;
   }
+
+  parseConfigForCommonParams(config);
 }
 
 ServerJobPayload
@@ -277,18 +279,80 @@ IQMServerHelper::processResults(ServerMessage &postJobResponse,
                              ", reason: " + jobMessage);
   }
 
-  auto counts_batch = postJobResponse["counts_batch"];
-  if (counts_batch.is_null()) {
-    throw std::runtime_error("No counts in the response");
+  ServerMessage counts_batch;
+  try {
+    RestClient client;
+    std::string iqmServerBaseUrl(iqmServerUrl);
+
+    auto pos = iqmServerBaseUrl.find("://cocos.");
+    if (pos != std::string::npos) {
+      iqmServerBaseUrl.erase(pos + 3, 6); // skip the anchor and erase "cocos."
+      pos = iqmServerBaseUrl.find_first_of('/', pos + 3); // start of the path
+      iqmServerBaseUrl.erase(pos + 1);                    // erase the path
+    }
+
+    auto headers = generateRequestHeader();
+    counts_batch = client.get(
+        iqmServerBaseUrl,
+        "api/v1/jobs/" + jobID + "/artifacts/measurement_counts", headers);
+    if (counts_batch.is_null()) {
+      throw std::runtime_error("No counts in the response");
+    }
+  } catch (const std::exception &e) {
+    throw std::runtime_error("Unable to get counts for job " + jobID + ": " +
+                             std::string(e.what()));
   }
+  CUDAQ_INFO("Artifacts: {}", counts_batch.dump());
 
   // assume there is only one measurement and everything goes into the
   // GlobalRegisterName of `sample_results`
   std::vector<ExecutionResult> srs;
 
   for (auto &counts : counts_batch.get<std::vector<ServerMessage>>()) {
-    srs.push_back(ExecutionResult(
-        counts["counts"].get<std::unordered_map<std::string, std::size_t>>()));
+    bool reorder = false;
+
+    unsigned long i = 0;
+    std::vector<size_t> mxOrder;
+    for (std::string key : counts["measurement_keys"]) {
+      if (!key.starts_with("m_QB")) {
+        throw std::runtime_error("Malformed measurement key received: " + key);
+      }
+      key.erase(0, 4);
+      auto pos = std::stoull(key) - 1;
+      mxOrder.push_back(static_cast<size_t>(pos));
+      if (pos != i++) {
+        reorder = true;
+      }
+    }
+
+    if (reorder) {
+      std::unordered_map<std::string, std::size_t> cntDict;
+
+      // get the bits into the order given by the measurement keys
+      for (auto [bits, count] :
+           counts["counts"]
+               .get<std::unordered_map<std::string, std::size_t>>()) {
+        if (bits.size() != mxOrder.size()) {
+          throw std::runtime_error("Expected length " +
+                                   std::to_string(mxOrder.size()) +
+                                   " for bitstring " + bits);
+        }
+
+        std::string oBits(bits);
+        unsigned i = 0;
+        for (auto idx : mxOrder) {
+          oBits[idx] = bits[i++];
+        }
+
+        cntDict[oBits] = count;
+      }
+
+      srs.push_back(ExecutionResult(cntDict));
+    } else {
+      srs.push_back(ExecutionResult(
+          counts["counts"]
+              .get<std::unordered_map<std::string, std::size_t>>()));
+    }
   }
 
   sample_result sampleResult(srs);
