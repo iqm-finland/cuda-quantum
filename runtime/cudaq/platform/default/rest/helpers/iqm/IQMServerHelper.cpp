@@ -310,19 +310,26 @@ IQMServerHelper::processResults(ServerMessage &postJobResponse,
 
   for (auto &counts : counts_batch.get<std::vector<ServerMessage>>()) {
     bool reorder = false;
+    std::size_t i = 0; // bit positions
+    std::map<std::string, std::size_t, qubitOrder> mxKeys;
+    std::vector<std::size_t> mxOrder;
 
-    unsigned long i = 0;
-    std::vector<size_t> mxOrder;
+    // The measurement_keys tell which qubits were measured. An ordered map
+    // is used to sort the strings in numerical order and then the bitstrings
+    // are ordered accordingly. As result the bitstrings are ordered according
+    // to the physical qubit numbering.
     for (std::string key : counts["measurement_keys"]) {
       if (!key.starts_with("m_QB")) {
         throw std::runtime_error("Malformed measurement key received: " + key);
       }
-      key.erase(0, 4);
-      auto pos = std::stoull(key) - 1;
-      mxOrder.push_back(static_cast<size_t>(pos));
-      if (pos != i++) {
+      mxKeys[key] = i++;
+    }
+    mxOrder.reserve(mxKeys.size());
+    i = 0;
+    for (auto [_, idx] : mxKeys) {
+      mxOrder.push_back(idx);
+      if (!reorder && idx != i++)
         reorder = true;
-      }
     }
 
     if (reorder) {
@@ -339,9 +346,9 @@ IQMServerHelper::processResults(ServerMessage &postJobResponse,
         }
 
         std::string oBits(bits);
-        unsigned i = 0;
+        i = 0;
         for (auto idx : mxOrder) {
-          oBits[idx] = bits[i++];
+          oBits[i++] = bits[idx];
         }
 
         cntDict[oBits] = count;
