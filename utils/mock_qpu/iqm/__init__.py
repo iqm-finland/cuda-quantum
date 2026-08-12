@@ -120,14 +120,14 @@ def _process_bad_cz_gate_list():
             if reverse_gate in qubit_connectivity:
                 qubit_connectivity.remove(reverse_gate)
                 print(f"Disabled CZ-gate between: "
-                        f"{reverse_gate[0]}-{reverse_gate[1]}")
+                      f"{reverse_gate[0]}-{reverse_gate[1]}")
 
 
 def _generate_quantum_architecture(qpu: str) -> bool:
     """Generate the quantum architecture description of the specified QPU.
     This populates the global variables 'qubits' and 'qubit_connectivity'."""
     architectures = {
-        "crystal-5":  [1, 0, 3, 1, 1, -1],
+        "crystal-5": [1, 0, 3, 1, 1, -1],
         "crystal-20": [2, 0, 5, 1, 5, 0, 5, 0, 3, -1],
         "crystal-54": [2, 0, 5, 2, 7, 1, 8, 1, 9, 0, 8, -1, 7, 0, 5, -1, 3, -1]
     }
@@ -256,19 +256,18 @@ def _partial_trace(N, rho, keep):
     """Calculate the partial trace of a density matrix"""
     trace_out = sorted(set(range(N)) - set(keep), reverse=True)
 
-    if len(trace_out) == 0:
-        return rho.reshape(
-            2**N, 2**N)  # No tracing needed, return the reshaped matrix
+    if len(trace_out):
 
-    # Reshape into tensor with shape (2,2,...,2,2,...,2), 2N times
-    rho = rho.reshape([2] * 2 * N)
+        # Reshape into tensor with shape (2,2,...,2,2,...,2), 2N times
+        rho = rho.reshape([2] * 2 * N)
 
-    # Trace over the unwanted qubits
-    for q in trace_out:
-        rho = np.trace(rho, axis1=q, axis2=q + N)
-        N -= 1  # Adjust N as one qubit is traced out
+        # Trace over the unwanted qubits
+        for q in trace_out:
+            rho = np.trace(rho, axis1=q, axis2=q + N)
+            N -= 1  # Adjust N as one qubit is traced out
 
-    return rho
+    # Return the reshaped matrix
+    return rho.reshape(2**N, 2**N)
 
 
 def _validate_measurements(job: Job, circuit: iqm_client.Circuit) -> bool:
@@ -400,7 +399,7 @@ def _simulate_circuit(instructions: list[iqm_client.Instruction],
         ms: int(np.round(np.real(prob * shots))) for ms, prob in zip(
             _generate_measurement_strings(len(measurement_qubits_positions)),
             probabilities,
-        )
+        ) if np.real(prob * shots) >= 1
     }
 
 
@@ -518,10 +517,8 @@ async def get_job_status(job_id: str, request: Request):
 
     results = {
         # Note: this is a subset of what a real server would return.
-        "artifacts":
-            [],
-        "messages":
-            [],
+        "artifacts": [],
+        "messages": [],
         "queue_position":
             1,
         "runtime_ms":
@@ -532,9 +529,11 @@ async def get_job_status(job_id: str, request: Request):
 
     if job.status == iqm_client.Status.FAILED:
         results["errors"] = list()
-        results["errors"].append({"error_code": "unknown",
-                                  "message": job.result.message,
-                                  "source": "iqm-server"})
+        results["errors"].append({
+            "error_code": "unknown",
+            "message": job.result.message,
+            "source": "iqm-server"
+        })
 
     return results
 
