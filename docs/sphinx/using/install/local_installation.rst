@@ -137,7 +137,7 @@ There are some known Blackwell issues when using CUDA-Q.
     .. code-block:: console
 
         Module 'torch' was found, but when imported by pytest it raised:
-        ImportError('/home/cudaq/.local/lib/python3.10/site-packages/torch/lib/../../nvidia/cusparse/lib/libcusparse.so.12: undefined symbol: __nvJitLinkCreate_12_8, version libnvJitLink.so.12')
+        ImportError('/home/cudaq/.local/lib/python3.12/site-packages/torch/lib/../../nvidia/cusparse/lib/libcusparse.so.12: undefined symbol: __nvJitLinkCreate_12_8, version libnvJitLink.so.12')
 
     This may be caused by an incorrectly linked shared object. If you encounter this, try adding the shared object to the LD_LIBRARY_PATH:
 
@@ -280,26 +280,32 @@ please double check that your operating system is listed as
 with an older GNU C library version, you will need to build the installer from 
 source following the instructions in :doc:`data_center_install`.
 
-You can download the `install_cuda_quantum` file for your platform from
+You can download the ``install_cuda_quantum`` file for your platform from
 the assets of the respective `GitHub release <https://github.com/NVIDIA/cuda-quantum/releases>`__:
 
-- **Linux**: `install_cuda_quantum_cu12.<arch>` or `install_cuda_quantum_cu13.<arch>` (where `<arch>` is `x86_64` or `aarch64`)
-- **macOS**: `install_cuda_quantum_darwin.arm64` (CPU-only, Apple silicon)
+- **Linux**: ``install_cuda_quantum_cu12.<arch>`` or ``install_cuda_quantum_cu13.<arch>`` (where `<arch>` is `x86_64` or `aarch64`)
+- **macOS**: ``install_cuda_quantum_darwin.arm64`` (CPU-only, Apple silicon)
 
 The installer is a `self-extracting archive <https://makeself.io/>`__ that contains the 
 pre-built binaries as well as a script to move them to the correct locations. You will need
 `bash`, `tar`, and `gzip` to run the installer.
-The installation location of CUDA-Q is not currently configurable and using the installer
-hence requires admin privileges on the system. We may revise that in the future; please see and
-upvote the corresponding `GitHub issue <https://github.com/NVIDIA/cuda-quantum/issues/1075>`__.
-
-To install CUDA-Q, execute the command
+To install CUDA-Q to the default location (``/opt/nvidia/cudaq``), execute the command
 
 .. literalinclude:: ../../../../docker/test/installer/linux.Dockerfile
     :language: bash
     :dedent:
     :start-after: [>CUDAQuantumInstall]
     :end-before: [<CUDAQuantumInstall]
+
+To install to a custom location (no ``sudo`` required), pass ``--installpath``:
+
+.. code-block:: bash
+
+    bash install_cuda_quantum*.$(uname -m) --accept -- --installpath $HOME/.cudaq
+
+In both cases, the installer configures your shell profile so that CUDA-Q
+is available in new shells automatically. To use it in the current shell,
+run ``source <installpath>/set_env.sh``.
 
 .. note:: 
 
@@ -654,8 +660,10 @@ running on DGX Cloud:
 
 Replace `<my-custom-token>` in the command above with a custom token that you can freely choose.
 You will use this token to authenticate with JupyterLab;
-Go to the `job portal <https://bc.ngc.nvidia.com/jobs>`__, click on the job you just launched, and click on the link
-under |:spellcheck-disable:|"URL/Hostname"|:spellcheck-enable:| in Service Mapped Ports. 
+In the Base Command Platform web interface, navigate to your job (see
+`Jobs and GPU Instances <https://docs.nvidia.com/base-command-platform/user-guide/latest/index.html#jobs-and-gpu-instances>`__),
+click on the job you just launched, and click on the link
+under |:spellcheck-disable:|"URL/Hostname"|:spellcheck-enable:| in Service Mapped Ports.
 
 .. note::
 
@@ -681,7 +689,9 @@ or the `VS Code Web UI <https://vscode.dev/>`__, running on DGX Cloud:
       --ace <ace_name> --instance <instance_name> \
       --commandline 'vscode-setup tunnel --name cuda-quantum-dgx --accept-server-license-terms'
 
-Go to the `job portal <https://bc.ngc.nvidia.com/jobs>`__, click on the job you just launched, and select the "Log"
+In the Base Command Platform web interface, navigate to your job (see
+`Jobs and GPU Instances <https://docs.nvidia.com/base-command-platform/user-guide/latest/index.html#jobs-and-gpu-instances>`__),
+click on the job you just launched, and select the "Log"
 tab. Once the job is running, you should see instructions there for how to connect to the device the job is running on.
 These instructions include a link to open and the code to enter on that page; follow the instructions to authenticate. 
 Once you have authenticated, you can either 
@@ -886,7 +896,7 @@ The following table summarizes the required components.
     * - Tested Distributions
       - CentOS 8; Debian 11, 12; Fedora 41; OpenSUSE/SLED/SLES 15.5, 15.6; RHEL 8, 9; Rocky 8, 9; Ubuntu 22.04, 24.04
     * - Python versions
-      - 3.10+
+      - 3.11+
 
 .. list-table:: Requirements for GPU Simulation
     :widths: 30 50
@@ -908,6 +918,35 @@ Detailed information about supported drivers for different CUDA versions and be 
     Tegra devices (Jetson) are not supported in CUDA-Q at this time.
 
     For more information, please refer to `Binary Compatibility documentation <https://docs.nvidia.com/cuda/cuda-c-programming-guide/index.html#binary-compatibility>`_.
+
+.. _dynamic-linking-gmp-mpfr:
+
+Dynamic linking to GMP and MPFR
+++++++++++++++++++++++++++++++++++++
+
+CUDA-Q binary distributions include the `GMP <https://gmplib.org/>`__ and
+`MPFR <https://www.mpfr.org/>`__ shared libraries, which are used by the
+Clifford+T rotation synthesis library. Both libraries are unmodified and are
+licensed under the GNU Lesser General Public License v3. The full license
+texts are included in the `LICENSES` folder distributed with CUDA-Q, and the
+corresponding copyright notices are listed in the `NOTICE` file.
+
+CUDA-Q links to GMP and MPFR exclusively dynamically, and the two libraries
+can be replaced with compatible versions without rebuilding CUDA-Q by
+substituting the shared library files (`libgmp.so*` and `libmpfr.so*` on
+Linux, `libgmp*.dylib` and `libmpfr*.dylib` on macOS):
+
+- Docker image and installer - the libraries are located in the `lib`
+  folder of the CUDA-Q installation directory, that is
+  `${CUDA_QUANTUM_PATH}/lib`.
+- Python wheels - the libraries are located in the `lib` folder that is
+  installed next to the `cudaq` package in your Python environment's
+  `site-packages` directory.
+
+Alternatively, when building CUDA-Q from source, you can link against your
+own GMP and MPFR builds instead of the ones built by
+`scripts/install_prerequisites.sh`. Please see :doc:`data_center_install` for more
+information.
 
 .. _post-installation:
 

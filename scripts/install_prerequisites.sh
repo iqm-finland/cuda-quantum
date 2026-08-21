@@ -8,20 +8,29 @@
 # the terms of the Apache License 2.0 which accompanies this distribution.     #
 # ============================================================================ #
 
-# Usage: 
-# This script builds and installs a minimal set of dependencies needed to build 
-# CUDA-Q from source. 
+# Usage:
+# This script builds and installs a minimal set of dependencies needed to build
+# CUDA-Q from source.
 #
-# Usage: 
+# Usage:
 # bash install_prerequisites.sh
+#   -e <name>     Exclude a prerequisite (e.g. zlib, gmp, mpfr, llvm, blas, ssl, curl, aws, cuquantum, cutensor, toolchain)
+#   -t <name>     Select toolchain (e.g. gcc12, llvm)
+#   -m            Only install libraries for which an *_INSTALL_PREFIX is defined
+#   -l            Generate a prerequisites lock file and exit (no installation)
 #
-# For the libraries LLVM, BLAS, ZLIB, OPENSSL, CURL, CUQUANTUM, CUTENSOR, if the
-# library is not found in the location defined by the corresponding environment variable
-# *_INSTALL_PREFIX, it will be built from source and installed in that location.
+# When the -l flag is used, a lock file named cudaq_prereqs.lock (or the path
+# given via the PREREQS_LOCK_FILE environment variable) is generated that
+# enumerates the source locations for all prerequisites that would be installed
+# for the current configuration. This can be used to pre-download sources in
+# controlled build environments.
+#
+# For the libraries LLVM, BLAS, ZLIB, GMP, MPFR, OPENSSL, CURL, CUQUANTUM, CUTENSOR,
+# if the library is not found in the location defined by the corresponding environment
+# variable *_INSTALL_PREFIX, it will be built from source and installed in that location.
 # If the LLVM libraries are built from source, the environment variable LLVM_PROJECTS
-# can be used to customize which projects are built, and pybind11 will be built and 
-# installed in the location defined by PYBIND11_INSTALL_PREFIX if necessary.
-# The cuQuantum and cuTensor libraries are only installed if a suitable CUDA compiler 
+# can be used to customize which projects are built.
+# The cuQuantum and cuTensor libraries are only installed if a suitable CUDA compiler
 # is installed. 
 # 
 # By default, all prerequisites outlined above are installed even if the
@@ -31,19 +40,75 @@
 # is passed or the corresponding commands already exist. If the commands already 
 # exist, compatibility or versions won't be validated.
 
+# Centralized version / source definitions used by both installation and lockfile
+# generation. Keeping these here avoids duplication between code paths.
+CMAKE_VERSION=4.0.7
+CMAKE_MACOS_TARBALL_URL="https://github.com/Kitware/CMake/releases/download/v${CMAKE_VERSION}/cmake-${CMAKE_VERSION}-macos-universal.tar.gz"
+CMAKE_LINUX_INSTALLER_URL_BASE="https://github.com/Kitware/CMake/releases/download/v${CMAKE_VERSION}/cmake-${CMAKE_VERSION}-linux-"
+
+NINJA_VERSION=1.11.1
+NINJA_TARBALL_URL="https://github.com/ninja-build/ninja/archive/refs/tags/v${NINJA_VERSION}.tar.gz"
+
+ZLIB_VERSION=1.3.2
+ZLIB_TARBALL_URL="https://github.com/madler/zlib/releases/download/v${ZLIB_VERSION}/zlib-${ZLIB_VERSION}.tar.gz"
+
+BLAS_VERSION=3.11.0
+BLAS_TARBALL_URL="http://www.netlib.org/blas/blas-${BLAS_VERSION}.tgz"
+
+# GMP and MPFR back the Clifford+T rotation synthesis library (cudaq-synth).
+# Both are LGPL v3 (see https://gmplib.org/ and https://www.mpfr.org/). They
+# are built as shared libraries only and linked dynamically.
+GMP_VERSION=6.3.0
+GMP_TARBALL_URLS="https://ftp.gnu.org/gnu/gmp/gmp-${GMP_VERSION}.tar.xz \
+https://gmplib.org/download/gmp/gmp-${GMP_VERSION}.tar.xz"
+
+MPFR_VERSION=4.2.2
+MPFR_TARBALL_URLS="https://ftp.gnu.org/gnu/mpfr/mpfr-${MPFR_VERSION}.tar.xz \
+https://www.mpfr.org/mpfr-${MPFR_VERSION}/mpfr-${MPFR_VERSION}.tar.xz"
+
+PERL_VERSION=5.38.2
+PERL_TARBALL_URL="https://www.cpan.org/src/5.0/perl-${PERL_VERSION}.tar.gz"
+
+OPENSSL_VERSION=3.6.3
+OPENSSL_TARBALL_URL="https://www.openssl.org/source/openssl-${OPENSSL_VERSION}.tar.gz"
+
+CURL_VERSION=8.21.0
+CURL_VERSION_UNDERSCORE=curl-8_21_0
+CURL_TARBALL_URL="https://github.com/curl/curl/releases/download/${CURL_VERSION_UNDERSCORE}/curl-${CURL_VERSION}.tar.gz"
+CACERT_URL="https://curl.se/ca/cacert.pem"
+CACERT_SHA256_URL="${CACERT_URL}.sha256"
+
+AWS_SDK_CPP_URL="https://github.com/aws/aws-sdk-cpp"
+AWS_SDK_CPP_REF="1.11.454"
+
+# QRMI pre-built C artifacts for Pasqal QRMI connector
+QRMI_RELEASE_REPO=${QRMI_RELEASE_REPO:-qiskit-community/qrmi}
+QRMI_RELEASE_TAG=${QRMI_RELEASE_TAG:-v0.12.0}
+QRMI_RELEASE_VERSION=${QRMI_RELEASE_TAG#v}
+QRMI_RELEASE_BASE="https://github.com/${QRMI_RELEASE_REPO}/releases/download/${QRMI_RELEASE_TAG}"
+QRMI_ARCHIVE="libqrmi-${QRMI_RELEASE_VERSION}-el8-x86_64.tar.gz"
+QRMI_UNPACK_DIR="libqrmi-${QRMI_RELEASE_VERSION}"
+# NOTE: This needs to be updated whenever the pre-built artifacts are updated. The SHA-256 can be computed with:
+#   wget -O qrmi.tar.gz "${QRMI_RELEASE_BASE}/${QRMI_ARCHIVE}"
+#   sha256sum qrmi.tar.gz | awk '{print $1}'
+QRMI_ARCHIVE_SHA256=${QRMI_ARCHIVE_SHA256:-2986150d4f55e1f6566bef16d9fb3897ca04dd7eaa681865f7ef244f298a6746}
+
 # Process command line arguments
 toolchain=''
 exclude_prereq=''
 install_all=true
+lock_mode=false
 __optind__=$OPTIND
 OPTIND=1
-while getopts ":e:t:ml:-:" opt; do
+while getopts ":e:t:ml-:" opt; do
   case $opt in
     e) exclude_prereq="$(echo "$OPTARG" | tr '[:upper:]' '[:lower:]')"
     ;;
     t) toolchain="$OPTARG"
     ;;
     m) install_all=false
+    ;;
+    l) lock_mode=true
     ;;
     :) echo "Option -$OPTARG requires an argument."
     (return 0 2>/dev/null) && return 1 || exit 1
@@ -60,6 +125,100 @@ if $install_all; then
   source "$(dirname "${BASH_SOURCE[0]}")/set_env_defaults.sh"
 fi
 
+# If requested, generate a lock file describing all source archives / repositories
+# that would be used to build the prerequisites, then exit without installing.
+if $lock_mode; then
+  LOCK_FILE="${PREREQS_LOCK_FILE:-cudaq_prereqs.lock}"
+
+  # Helper to append one entry to the lock file in a simple key=value format.
+  function add_lock_line {
+    local name="$1"; shift
+    echo "name=${name} $*" >> "$LOCK_FILE"
+  }
+
+  # Initialize / truncate the lock file and add a short header.
+  {
+    echo "# CUDA-Q prerequisites lockfile"
+    echo "# Generated: $(date -u +"%Y-%m-%dT%H:%M:%SZ")"
+    echo "# Format: name=<id> key=value ..."
+  } > "$LOCK_FILE"
+
+  # [Toolchain] CMake and Ninja sources (compiler toolchain itself is handled
+  # via install_toolchain.sh or the system toolchain and is not pinned here).
+  # In lockfile mode, always list the toolchain sources regardless of what is
+  # currently installed or excluded.
+  add_lock_line "cmake-macos" \
+    "type=tar" \
+    "url=${CMAKE_MACOS_TARBALL_URL}" \
+    "version=${CMAKE_VERSION}"
+  add_lock_line "cmake" \
+    "type=sh" \
+    "url=${CMAKE_LINUX_INSTALLER_URL_BASE}$(uname -m).sh" \
+    "version=${CMAKE_VERSION}"
+  add_lock_line "ninja" \
+    "type=tar" \
+    "url=${NINJA_TARBALL_URL}" \
+    "version=${NINJA_VERSION}"
+
+  # [Zlib]
+  add_lock_line "zlib" \
+    "type=tar" \
+    "url=${ZLIB_TARBALL_URL}" \
+    "version=${ZLIB_VERSION}"
+
+  # [BLAS]
+  add_lock_line "blas" \
+    "type=tar" \
+    "url=${BLAS_TARBALL_URL}" \
+    "version=${BLAS_VERSION}"
+
+  # [GMP / MPFR]
+  add_lock_line "gmp" \
+    "type=tar" \
+    "url=${GMP_TARBALL_URLS%% *}" \
+    "version=${GMP_VERSION}"
+  add_lock_line "mpfr" \
+    "type=tar" \
+    "url=${MPFR_TARBALL_URLS%% *}" \
+    "version=${MPFR_VERSION}"
+
+  # [OpenSSL] (and its private Perl used only for the build)
+  add_lock_line "perl" \
+    "type=tar" \
+    "url=${PERL_TARBALL_URL}" \
+    "version=${PERL_VERSION}"
+  add_lock_line "openssl" \
+    "type=tar" \
+    "url=${OPENSSL_TARBALL_URL}" \
+    "version=${OPENSSL_VERSION}"
+
+  # [CURL] (including CA bundle)
+  add_lock_line "cacert" \
+    "type=pem" \
+    "url=${CACERT_URL}"
+  add_lock_line "curl" \
+    "type=tar" \
+    "url=${CURL_TARBALL_URL}" \
+    "version=${CURL_VERSION}"
+
+  # [AWS SDK]
+  add_lock_line "aws-sdk-cpp" \
+    "type=git" \
+    "url=${AWS_SDK_CPP_URL}" \
+    "ref=${AWS_SDK_CPP_REF}"
+
+  # [QRMI] Pre-built C artifacts for Pasqal QRMI connector
+  # Keep this in sync with the QRMI section in the installation path below.
+  add_lock_line "qrmi" \
+    "type=tar" \
+    "url=${QRMI_RELEASE_BASE}/${QRMI_ARCHIVE}" \
+    "version=${QRMI_RELEASE_VERSION}" \
+    "sha256=${QRMI_ARCHIVE_SHA256}"
+
+  echo "Prerequisites lockfile written to ${LOCK_FILE}."
+  (return 0 2>/dev/null) && return 0 || exit 0
+fi
+
 # Create a temporary directory for building source packages
 PREREQS_BUILD_DIR=$(mktemp -d)
 : "${PREREQS_BUILD_DIR:?ERROR mktemp failed}"
@@ -67,13 +226,46 @@ echo "Building prerequisites in $PREREQS_BUILD_DIR"
 # Remove below if you wish to debug pre-req build failures
 trap "rm -rf $PREREQS_BUILD_DIR" EXIT
 
+# Retry a command, clearing package-manager metadata between attempts. The CUDA
+# yum repo CDN intermittently serves a stale repomd.xml that points at rotated
+# repodata files, producing 404s; clearing metadata forces a fresh fetch.
+function retry {
+  local n=0 max=5 delay=15
+  until "$@"; do
+    n=$((n+1))
+    if [ "$n" -ge "$max" ]; then
+      echo "Command failed after $max attempts: $*" >&2
+      return 1
+    fi
+    echo "Attempt $n/$max failed; clearing repo metadata and retrying in ${delay}s..." >&2
+    if [ -x "$(command -v dnf)" ]; then dnf clean all || true
+    elif [ -x "$(command -v apt-get)" ]; then apt-get clean || true; fi
+    sleep "$delay"
+  done
+}
+
+
+function download_first {
+  local filename="$1"; shift
+  for url in "$@"; do
+    echo "Downloading ${url}..."
+    if retry wget --tries=1 -O "${filename}" "${url}"; then
+      return 0
+    fi
+    echo "Failed to download from ${url}; trying next mirror..." >&2
+  done
+  rm -f "${filename}"
+  echo "Failed to download from all mirrors: $*" >&2
+  return 1
+}
+
 function temp_install_if_command_unknown {
   if [ ! -x "$(command -v $1)" ]; then
     if [ -x "$(command -v apt-get)" ]; then
-      if [ -z "$PKG_UNINSTALL" ]; then apt-get update; fi
-      apt-get install -y --no-install-recommends $2
+      if [ -z "$PKG_UNINSTALL" ]; then retry apt-get update; fi
+      retry apt-get install -y --no-install-recommends $2
     elif [ -x "$(command -v dnf)" ]; then
-      dnf install -y --nobest --setopt=install_weak_deps=False $2
+      retry dnf install -y --nobest --setopt=install_weak_deps=False $2
     elif [ -x "$(command -v brew)" ]; then
       HOMEBREW_NO_AUTO_UPDATE=1 brew install $2
     else
@@ -112,6 +304,10 @@ set -e
 trap 'prepare_exit && ((return 0 2>/dev/null) && return 1 || exit 1)' EXIT
 this_file_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+if [ "$(uname)" = "Darwin" ] && [ -x "$(command -v xcrun)" ]; then
+  export SDKROOT="${SDKROOT:-$(xcrun --show-sdk-path)}"
+fi
+
 # [Toolchain] CMake, ninja and C/C++ compiler
 if $install_all && [ -z "$(echo $exclude_prereq | grep toolchain)" ]; then
   if [ -n "$toolchain" ] || [ ! -x "$(command -v "$CC")" ] || [ ! -x "$(command -v "$CXX")" ]; then
@@ -141,13 +337,13 @@ if $install_all && [ -z "$(echo $exclude_prereq | grep toolchain)" ]; then
     pushd "$PREREQS_BUILD_DIR"
     if [ "$(uname)" = "Darwin" ]; then
       cmake_arch="$(uname -m)"
-      wget "https://github.com/Kitware/CMake/releases/download/v3.26.4/cmake-3.26.4-macos-universal.tar.gz" -O cmake.tar.gz
+      wget "${CMAKE_MACOS_TARBALL_URL}" -O cmake.tar.gz
       tar -xzf cmake.tar.gz
-      mv cmake-3.26.4-macos-universal/CMake.app/Contents/bin/* $HOME/.local/bin/
-      mv cmake-3.26.4-macos-universal/CMake.app/Contents/share/* $HOME/.local/share/
+      mv "cmake-${CMAKE_VERSION}-macos-universal/CMake.app/Contents/bin/"* "$HOME/.local/bin/"
+      mv "cmake-${CMAKE_VERSION}-macos-universal/CMake.app/Contents/share/"* "$HOME/.local/share/"
     else
-      wget https://github.com/Kitware/CMake/releases/download/v3.26.4/cmake-3.26.4-linux-$(uname -m).sh -O cmake-install.sh
-      bash cmake-install.sh --skip-licence --exclude-subdir --prefix=/usr/local
+      wget "${CMAKE_LINUX_INSTALLER_URL_BASE}$(uname -m).sh" -O cmake-install.sh
+      bash cmake-install.sh --skip-license --exclude-subdir --prefix=/usr/local
     fi
     popd
   fi
@@ -160,8 +356,8 @@ if $install_all && [ -z "$(echo $exclude_prereq | grep toolchain)" ]; then
 
     # The pre-built binary for Linux on GitHub is built for x86_64 only,
     # see also https://github.com/ninja-build/ninja/issues/2284.
-    wget https://github.com/ninja-build/ninja/archive/refs/tags/v1.11.1.tar.gz
-    tar -xzvf v1.11.1.tar.gz && cd ninja-1.11.1
+    wget "${NINJA_TARBALL_URL}"
+    tar -xzvf "v${NINJA_VERSION}.tar.gz" && cd "ninja-${NINJA_VERSION}"
     if [ "$(uname)" = "Darwin" ]; then
       cmake -B build
     else
@@ -180,11 +376,10 @@ if $install_all && [ -z "$(echo $exclude_prereq | grep toolchain)" ]; then
 fi
 
 # [Zlib] Needed to build LLVM with zlib support (used by linker)
-# [Minizip] Needed by rest_server for archive handling
-# Build both from source for consistency across platforms.
+# Build from source for consistency across platforms.
 if [ -n "$ZLIB_INSTALL_PREFIX" ] && [ -z "$(echo $exclude_prereq | grep zlib)" ]; then
-  if [ ! -f "$ZLIB_INSTALL_PREFIX/lib/libz.a" ] || [ ! -f "$ZLIB_INSTALL_PREFIX/lib/libminizip.a" ]; then
-    echo "Installing libz and minizip..."
+  if [ ! -f "$ZLIB_INSTALL_PREFIX/lib/libz.a" ]; then
+    echo "Installing libz..."
     temp_install_if_command_unknown wget wget
     temp_install_if_command_unknown make make
     temp_install_if_command_unknown automake automake
@@ -199,28 +394,120 @@ if [ -n "$ZLIB_INSTALL_PREFIX" ] && [ -z "$(echo $exclude_prereq | grep zlib)" ]
 
     pushd "$PREREQS_BUILD_DIR"
 
-    wget -O zlib-1.3.1.tar.gz https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz
-    tar -xzf zlib-1.3.1.tar.gz && cd zlib-1.3.1
+    wget -O "zlib-${ZLIB_VERSION}.tar.gz" "${ZLIB_TARBALL_URL}"
+    tar -xzf "zlib-${ZLIB_VERSION}.tar.gz" && cd "zlib-${ZLIB_VERSION}"
     CC="$CC" CFLAGS="-fPIC" \
     ./configure --prefix="$ZLIB_INSTALL_PREFIX" --static
-    make CC="$CC" && make install
-    cd contrib/minizip
-    # On macOS with Homebrew, set up environment for autoreconf:
-    # - Add Homebrew's m4 macros to aclocal search path
-    # - Point LIBTOOLIZE to glibtoolize (Homebrew's GNU libtoolize)
-    if [ "$(uname)" = "Darwin" ] && [ -x "$(command -v brew)" ]; then
-      export ACLOCAL_PATH="$(brew --prefix)/share/aclocal${ACLOCAL_PATH:+:$ACLOCAL_PATH}"
-      export LIBTOOLIZE=glibtoolize
-    fi
-    autoreconf --install
-    CC="$CC" CFLAGS="-fPIC" \
-    ./configure --prefix="$ZLIB_INSTALL_PREFIX" --disable-shared
     make CC="$CC" && make install
 
     popd
     remove_temp_installs
   else
-    echo "libz and minizip already installed in $ZLIB_INSTALL_PREFIX."
+    echo "libz already installed in $ZLIB_INSTALL_PREFIX."
+  fi
+fi
+
+# [GMP] Needed for the Clifford+T rotation synthesis library (cudaq-synth).
+if [ "$(uname)" = "Darwin" ]; then shared_lib_ext=dylib; else shared_lib_ext=so; fi
+if [ -n "$GMP_INSTALL_PREFIX" ] && [ -z "$(echo $exclude_prereq | grep gmp)" ]; then
+  if [ ! -f "$GMP_INSTALL_PREFIX/lib/libgmp.$shared_lib_ext" ]; then
+    echo "Installing GMP..."
+    temp_install_if_command_unknown wget wget
+    temp_install_if_command_unknown make make
+    temp_install_if_command_unknown m4 m4
+    if [ -x "$(command -v apt-get)" ]; then
+      temp_install_if_command_unknown xz xz-utils
+    else
+      temp_install_if_command_unknown xz xz
+    fi
+
+    pushd "$PREREQS_BUILD_DIR"
+
+    download_first "gmp-${GMP_VERSION}.tar.xz" ${GMP_TARBALL_URLS}
+    tar -xf "gmp-${GMP_VERSION}.tar.xz" && cd "gmp-${GMP_VERSION}"
+    gmp_host_flags=""
+    if [ "$(uname -m)" = "x86_64" ]; then
+      gmp_host_flags="--enable-fat"
+    elif [ "$(uname -m)" = "aarch64" ] || [ "$(uname -m)" = "arm64" ]; then
+      if [ "$(uname)" = "Darwin" ]; then gmp_host_flags="--host=aarch64-apple-darwin"
+      else gmp_host_flags="--host=aarch64-unknown-linux-gnu"; fi
+    fi
+    CC="$CC" CXX="$CXX" \
+    ./configure --prefix="$GMP_INSTALL_PREFIX" \
+      --enable-shared --disable-static $gmp_host_flags
+    make -j$(getconf _NPROCESSORS_ONLN) && make install
+
+    popd
+    remove_temp_installs
+  else
+    echo "GMP already installed in $GMP_INSTALL_PREFIX."
+  fi
+fi
+
+# [MPFR] Needed for the Clifford+T rotation synthesis library (cudaq-synth).
+if [ -n "$MPFR_INSTALL_PREFIX" ] && [ -z "$(echo $exclude_prereq | grep mpfr)" ]; then
+  if [ ! -f "$MPFR_INSTALL_PREFIX/lib/libmpfr.$shared_lib_ext" ]; then
+    echo "Installing MPFR..."
+    temp_install_if_command_unknown wget wget
+    temp_install_if_command_unknown make make
+    if [ -x "$(command -v apt-get)" ]; then
+      temp_install_if_command_unknown xz xz-utils
+    else
+      temp_install_if_command_unknown xz xz
+    fi
+
+    pushd "$PREREQS_BUILD_DIR"
+
+    download_first "mpfr-${MPFR_VERSION}.tar.xz" ${MPFR_TARBALL_URLS}
+    tar -xf "mpfr-${MPFR_VERSION}.tar.xz" && cd "mpfr-${MPFR_VERSION}"
+    if [ "$(uname)" = "Darwin" ]; then
+      mpfr_ldflags="-Wl,-rpath,$GMP_INSTALL_PREFIX/lib"
+    else
+      mpfr_ldflags=""
+    fi
+    CC="$CC" LDFLAGS="$mpfr_ldflags" \
+    ./configure --prefix="$MPFR_INSTALL_PREFIX" \
+      --with-gmp="$GMP_INSTALL_PREFIX" --enable-shared --disable-static
+    make -j$(getconf _NPROCESSORS_ONLN) && make install
+
+    if [ "$(uname)" = "Darwin" ]; then
+      for lib in "$GMP_INSTALL_PREFIX"/lib/libgmp.*.dylib \
+                 "$MPFR_INSTALL_PREFIX"/lib/libmpfr.*.dylib; do
+        [ -f "$lib" ] || continue
+        install_name_tool -id "@rpath/$(basename "$lib")" "$lib"
+      done
+      gmp_dylib="$(basename "$(find "$GMP_INSTALL_PREFIX/lib" -name 'libgmp.*.dylib' | head -1)")"
+      mpfr_dylib="$(find "$MPFR_INSTALL_PREFIX/lib" -name 'libmpfr.*.dylib' | head -1)"
+      old_gmp_ref="$(otool -L "$mpfr_dylib" | awk '/libgmp/ {print $1}')"
+      if [ -n "$old_gmp_ref" ] && [ "$old_gmp_ref" != "@rpath/$gmp_dylib" ]; then
+        install_name_tool -change "$old_gmp_ref" "@rpath/$gmp_dylib" "$mpfr_dylib"
+      fi
+      if [ -x "$(command -v codesign)" ]; then
+        codesign -f -s - "$GMP_INSTALL_PREFIX"/lib/libgmp.*.dylib "$mpfr_dylib" || true
+      fi
+    fi
+
+    popd
+    remove_temp_installs
+  else
+    echo "MPFR already installed in $MPFR_INSTALL_PREFIX."
+  fi
+fi
+
+# [nanobind] Needed for MLIR Python bindings (MLIR 22+)
+# Install nanobind independently of the LLVM build so that it is available
+# even when LLVM is restored from cache.
+if [ -n "$NANOBIND_INSTALL_PREFIX" ]; then
+  if [ ! -d "$NANOBIND_INSTALL_PREFIX" ] || [ -z "$(ls -A "$NANOBIND_INSTALL_PREFIX"/* 2> /dev/null)" ]; then
+    echo "Building nanobind..."
+    cd "$this_file_dir" && cd $(git rev-parse --show-toplevel)
+    git submodule update --init --recursive --recommend-shallow --single-branch tpls/nanobind
+    mkdir -p "tpls/nanobind/build" && cd "tpls/nanobind/build"
+    cmake -G Ninja ../ -DCMAKE_INSTALL_PREFIX="$NANOBIND_INSTALL_PREFIX" -DNB_TEST=False
+    cmake --build . --target install --config Release
+    cd "$working_dir"
+  else
+    echo "nanobind already installed in $NANOBIND_INSTALL_PREFIX."
   fi
 fi
 
@@ -230,21 +517,23 @@ if [ -n "$LLVM_INSTALL_PREFIX" ] && [ -z "$(echo $exclude_prereq | grep llvm)" ]
     echo "Installing LLVM libraries..."
     LLVM_INSTALL_PREFIX="$LLVM_INSTALL_PREFIX" \
     LLVM_PROJECTS="$LLVM_PROJECTS" \
-    PYBIND11_INSTALL_PREFIX="$PYBIND11_INSTALL_PREFIX" \
+    NANOBIND_INSTALL_PREFIX="$NANOBIND_INSTALL_PREFIX" \
     Python3_EXECUTABLE="$Python3_EXECUTABLE" \
     bash "$this_file_dir/build_llvm.sh" -v
-  else 
+  else
     echo "LLVM already installed in $LLVM_INSTALL_PREFIX."
   fi
 
-  if [ "$toolchain" = "llvm" ]; then
+  if [ "$toolchain" = "llvm" ] || [ "$(uname)" = "Darwin" ]; then
     #rm -rf "$llvm_stage1_tmpdir"
-    export CC="$LLVM_INSTALL_PREFIX/bin/clang" 
+    export CC="$LLVM_INSTALL_PREFIX/bin/clang"
     export CXX="$LLVM_INSTALL_PREFIX/bin/clang++"
-    export FC="$LLVM_INSTALL_PREFIX/bin/flang-new"
     echo "Configured C compiler: $CC"
     echo "Configured C++ compiler: $CXX"
-    echo "Configured Fortran compiler: $FC"
+    if [ -x "$LLVM_INSTALL_PREFIX/bin/flang" ]; then
+      export FC="$LLVM_INSTALL_PREFIX/bin/flang"
+      echo "Configured Fortran compiler: $FC"
+    fi
   fi
 fi
 
@@ -263,9 +552,14 @@ if [ -n "$BLAS_INSTALL_PREFIX" ] && [ -z "$(echo $exclude_prereq | grep blas)" ]
     pushd "$PREREQS_BUILD_DIR"
 
     # See also: https://github.com/NVIDIA/cuda-quantum/issues/452
-    wget http://www.netlib.org/blas/blas-3.11.0.tgz
-    tar -xzvf blas-3.11.0.tgz && cd BLAS-3.11.0
-    make FC="${FC:-gfortran}"
+    wget "${BLAS_TARBALL_URL}"
+    tar -xzvf "blas-${BLAS_VERSION}.tgz" && cd BLAS-3.11.0
+    if [ toolchain == "gcc12" ]; then
+      make FC="${FC:-gfortran}"
+    else
+      make FC="${FC:-gfortran}" FFLAGS="-O2"
+    fi
+
     mkdir -p "$BLAS_INSTALL_PREFIX"
     mv blas_*.a "$BLAS_INSTALL_PREFIX/libblas.a"
 
@@ -289,8 +583,8 @@ if [ -n "$OPENSSL_INSTALL_PREFIX" ] && [ -z "$(echo $exclude_prereq | grep ssl)"
     # Not all perl installations include all necessary modules.
     # To facilitate a consistent build across platforms and to minimize dependencies,
     # we just use our own perl version for the OpenSSL build.
-    wget https://www.cpan.org/src/5.0/perl-5.38.2.tar.gz
-    tar -xzf perl-5.38.2.tar.gz && cd perl-5.38.2
+    wget "${PERL_TARBALL_URL}"
+    tar -xzf "perl-${PERL_VERSION}.tar.gz" && cd "perl-${PERL_VERSION}"
     ./Configure -des -Dcc="$CC" -Dprefix="$PREREQS_BUILD_DIR/perl5"
     make CC="$CC" && make install
     cd ..
@@ -304,8 +598,8 @@ if [ -n "$OPENSSL_INSTALL_PREFIX" ] && [ -z "$(echo $exclude_prereq | grep ssl)"
       fi
     fi
 
-    wget https://www.openssl.org/source/openssl-3.5.1.tar.gz
-    tar -xf openssl-3.5.1.tar.gz && cd openssl-3.5.1
+    wget "${OPENSSL_TARBALL_URL}"
+    tar -xf "openssl-${OPENSSL_VERSION}.tar.gz" && cd "openssl-${OPENSSL_VERSION}"
     CC="$CC" CFLAGS="-fPIC" CXX="$CXX" CXXFLAGS="-fPIC" AR="${AR:-ar}" \
     "$PREREQS_BUILD_DIR/perl5/bin/perl" Configure no-shared \
       --prefix="$OPENSSL_INSTALL_PREFIX" zlib \
@@ -338,8 +632,8 @@ if [ -n "$CURL_INSTALL_PREFIX" ] && [ -z "$(echo $exclude_prereq | grep curl)" ]
     # downloaded from https://curl.se/ca/cacert.pem. For more information, see
     # - https://curl.se/docs/sslcerts.html
     # - https://curl.se/docs/caextract.html
-    wget https://curl.se/ca/cacert.pem
-    wget https://curl.se/ca/cacert.pem.sha256
+    wget "${CACERT_URL}"
+    wget "${CACERT_SHA256_URL}"
     if [ -x "$(command -v sha256sum)" ]; then
       computed_sha256="$(sha256sum cacert.pem)"
     else
@@ -363,8 +657,8 @@ if [ -n "$CURL_INSTALL_PREFIX" ] && [ -z "$(echo $exclude_prereq | grep curl)" ]
     # This allows CMake's find_package(CURL) to use config mode, which correctly encodes
     # full paths to dependencies (OpenSSL, zlib) and avoids pkg-config issues where
     # -lssl/-lcrypto resolve to the wrong system libraries on macOS.
-    wget https://github.com/curl/curl/releases/download/curl-8_5_0/curl-8.5.0.tar.gz
-    tar -xzvf curl-8.5.0.tar.gz && cd curl-8.5.0
+    wget "${CURL_TARBALL_URL}"
+    tar -xzvf "curl-${CURL_VERSION}.tar.gz" && cd "curl-${CURL_VERSION}"
     cmake -G Ninja -B build \
       -DCMAKE_C_COMPILER="$CC" \
       -DCMAKE_C_FLAGS="-fPIC" \
@@ -414,14 +708,15 @@ if [ -n "$AWS_INSTALL_PREFIX" ] && [ -z "$(echo $exclude_prereq | grep aws)" ]; 
     pushd "$PREREQS_BUILD_DIR"
 
     aws_service_components='braket s3-crt sts'
-    git clone --filter=tree:0 https://github.com/aws/aws-sdk-cpp aws-sdk-cpp
-    cd aws-sdk-cpp && git checkout 1.11.454 && git submodule update --init --recursive
+    git clone --filter=tree:0 "${AWS_SDK_CPP_URL}" aws-sdk-cpp
+    cd aws-sdk-cpp && git checkout "${AWS_SDK_CPP_REF}" && git submodule update --init --recursive
 
     # FIXME: CUDAQ VERSION?
     mkdir build && cd build
     cmake -G Ninja .. \
       -DCMAKE_INSTALL_PREFIX="${AWS_INSTALL_PREFIX}" \
       -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
       -DCMAKE_COMPILE_WARNING_AS_ERROR=OFF \
       -DAWS_SDK_WARNINGS_ARE_ERRORS=OFF \
       -DAWS_USER_AGENT_CUSTOMIZATION=CUDA-Q/${CUDA_QUANTUM_VERSION} \
@@ -444,6 +739,45 @@ if [ -n "$AWS_INSTALL_PREFIX" ] && [ -z "$(echo $exclude_prereq | grep aws)" ]; 
   else
     echo "AWS SDK already installed in $AWS_INSTALL_PREFIX."
   fi
+fi
+
+# [QRMI] Needed for the Pasqal QRMI connector
+if [ -n "$QRMI_INSTALL_PREFIX" ] && [ -z "$(echo $exclude_prereq | grep qrmi)" ] && [ "$(uname)" = "Linux" ] && [ "$(uname -m)" = "x86_64" ]; then
+  qrmi_header="$QRMI_INSTALL_PREFIX/include/qrmi.h"
+  qrmi_library="$QRMI_INSTALL_PREFIX/lib64/libqrmi.so"
+  if [ ! -f "$qrmi_header" ] || [ ! -f "$qrmi_library" ]; then
+    echo "Installing QRMI C artifacts..."
+    temp_install_if_command_unknown wget wget
+    pushd "$PREREQS_BUILD_DIR"
+
+    mkdir -p "$QRMI_INSTALL_PREFIX/include" "$QRMI_INSTALL_PREFIX/lib64"
+    wget "${QRMI_RELEASE_BASE}/${QRMI_ARCHIVE}" -O "${QRMI_ARCHIVE}"
+
+    if [ -x "$(command -v sha256sum)" ]; then
+      computed_sha256="$(sha256sum "${QRMI_ARCHIVE}" | awk '{print $1}')"
+    else
+      computed_sha256="$(shasum -a 256 "${QRMI_ARCHIVE}" | awk '{print $1}')"
+    fi
+    if [ "$computed_sha256" != "$QRMI_ARCHIVE_SHA256" ]; then
+      echo -e "\e[01;31mError: SHA-256 checksum mismatch for ${QRMI_ARCHIVE}.\e[0m" >&2
+      echo "Expected: $QRMI_ARCHIVE_SHA256" >&2
+      echo "Got:      $computed_sha256" >&2
+      rm -f "${qrmi_archive}"
+      (return 1 2>/dev/null) && return 1 || exit 1
+    fi
+
+    tar -xzf "${QRMI_ARCHIVE}"
+    cp "${QRMI_UNPACK_DIR}/qrmi.h" "$qrmi_header"
+    cp "${QRMI_UNPACK_DIR}/libqrmi.so" "$qrmi_library"
+    rm -rf "${QRMI_ARCHIVE}" "${QRMI_UNPACK_DIR}"
+
+    popd
+    remove_temp_installs
+  else
+    echo "QRMI already installed in $QRMI_INSTALL_PREFIX."
+  fi
+elif [ -n "$QRMI_INSTALL_PREFIX" ] && [ -z "$(echo $exclude_prereq | grep qrmi)" ]; then
+  echo "Skipping QRMI C artifacts install (supported only on Linux x86_64)."
 fi
 
 # [cuQuantum and cuTensor] Needed for GPU-accelerated components
@@ -475,4 +809,3 @@ fi
 # Make sure to call prepare_exit so that we properly uninstalled all helper tools,
 # and so that we are in the correct directory also when this script is sourced.
 prepare_exit && ((return 0 2>/dev/null) && return 0 || exit 0)
-

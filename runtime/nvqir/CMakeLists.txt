@@ -10,11 +10,10 @@ set(LIBRARY_NAME nvqir)
 
 set (CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wno-ctad-maybe-unsupported")
 
-set(INTERFACE_POSITION_INDEPENDENT_CODE ON)
-
 set(NVQIR_RUNTIME_SRC
   QIRTypes.cpp
   NVQIR.cpp
+  dem/DemScope.cpp
   resourcecounter/ResourceCounter.cpp
   ../cudaq/qis/state.cpp
 )
@@ -35,25 +34,27 @@ target_link_libraries(${LIBRARY_NAME}
   PRIVATE cudaq-logger
 )
 
-install(TARGETS ${LIBRARY_NAME} 
-        EXPORT nvqir-targets 
+install(TARGETS ${LIBRARY_NAME}
+        EXPORT nvqir-targets
         LIBRARY DESTINATION lib
+        COMPONENT Runtime
         INCLUDES DESTINATION include/nvqir)
 
 add_subdirectory(qpp)
 add_subdirectory(stim)
 
-if (CUSTATEVEC_ROOT AND CUDA_FOUND) 
+if (cuStateVec_FOUND)
   add_subdirectory(custatevec)
-endif() 
-if (CUTENSORNET_ROOT AND CUDA_FOUND)
-  add_subdirectory(cutensornet)  
 endif()
-if (CUDENSITYMAT_ROOT AND CUDA_FOUND)
+if (cuTensorNet_FOUND)
+  add_subdirectory(cutensornet)
+endif()
+if (cuDensityMat_FOUND)
   add_subdirectory(cudensitymat)
 endif()
 
 install(EXPORT nvqir-targets
         FILE NVQIRTargets.cmake
         NAMESPACE nvqir::
-        DESTINATION lib/cmake/nvqir)
+        DESTINATION lib/cmake/nvqir
+        COMPONENT Development)

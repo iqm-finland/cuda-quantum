@@ -6,8 +6,10 @@
  * the terms of the Apache License 2.0 which accompanies this distribution.    *
  ******************************************************************************/
 
-// RUN: nvq++ --enable-mlir %s -o %t && %t | FileCheck %s
-// RUN: nvq++ --target quantinuum --emulate %s -o %t && %t %s 2>&1 | FileCheck %s -check-prefix=FAIL
+// clang-format off
+// RUN: nvq++ %s -o %t && %t | FileCheck %s
+// RUN: nvq++ --target quantinuum --emulate %s -o %t && %t | FileCheck %s
+// clang-format on
 
 #include <cudaq.h>
 
@@ -28,8 +30,7 @@ int main() {
   for (auto &[bits, count] : counts) {
     printf("%s\n", bits.data());
   }
+  return 0;
 }
 
 // CHECK: 110
-
-// FAIL: failed to legalize operation 'quake.custom_op'

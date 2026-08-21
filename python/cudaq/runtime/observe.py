@@ -7,6 +7,7 @@
 # ============================================================================ #
 
 from cudaq.mlir._mlir_libs._quakeDialects import cudaq_runtime
+from cudaq.util import trace
 from .utils import __isBroadcast, __createArgumentSet
 from cudaq.kernel.kernel_decorator import (mk_decorator, isa_kernel_decorator)
 from cudaq.kernel.kernel_builder import isa_dynamic_kernel
@@ -17,32 +18,40 @@ def isValidObserveKernel(kernel):
         decorator = kernel
     else:
         decorator = mk_decorator(kernel)
+    if not decorator.supports_compilation():
+        return [
+            False,
+            "Unsupported target / Invalid kernel for `observe`: cannot compile"
+        ]
     return cudaq_runtime.isValidObserveKernel_impl(decorator.uniqName,
                                                    decorator.qkeModule)
 
 
-def __broadcastObserve(kernel, spin_operator, *args, shots_count=0, qpu_id=0):
+def __broadcastObserve(kernel, spin_operator, *args, shots_count=-1, qpu_id=0):
     argSet = __createArgumentSet(*args)
     N = len(argSet)
     results = []
+    kernel_name = kernel.name if hasattr(kernel, 'name') else ''
+    ctx_shots = shots_count if shots_count > 0 else 0
+    ctx = cudaq_runtime.ExecutionContext('observe', ctx_shots, qpu_id)
+    ctx.totalIterations = N
+    ctx.setSpinOperator(spin_operator)
+    ctx.kernelName = kernel_name
+    has_vector_args = isa_kernel_decorator(kernel) and any(
+        hasattr(a, 'shape') and len(a.shape) == 2 for a in args)
+    policy = cudaq_runtime.ObservePolicy(ctx, kernel_name, spin_operator)
     for i, a in enumerate(argSet):
-        ctx = cudaq_runtime.ExecutionContext('observe', shots_count, qpu_id)
-        ctx.totalIterations = N
         ctx.batchIteration = i
-        ctx.setSpinOperator(spin_operator)
-        with ctx:
-            kernel(*a)
-        res = ctx.result
         results.append(
-            cudaq_runtime.ObserveResult(ctx.getExpectationValue(),
-                                        spin_operator, res))
+            cudaq_runtime.launch_observe(policy, ctx, lambda a=a: kernel(*a)))
     return results
 
 
+@trace.traced
 def observe(kernel,
             spin_operator,
             *args,
-            shots_count=0,
+            shots_count=-1,
             noise_model=None,
             num_trajectories=None,
             execution=None,
@@ -132,7 +141,7 @@ def observe(kernel,
     elif isa_dynamic_kernel(kernel):
         decorator = mk_decorator(kernel)
     else:
-        raise RuntimeRrror(
+        raise RuntimeError(
             "unrecognized kernel - did you forget the @kernel attribute?")
     if (decorator.launch_args_required() != 0) and (decorator.formal_arity()
                                                     != len(args)):
@@ -158,33 +167,15 @@ def observe(kernel,
         else:
             ctx = cudaq_runtime.ExecutionContext('observe', 0, qpu_id)
         ctx.setSpinOperator(localOp)
-        ctx.allowJitEngineCaching = True
         if num_trajectories is not None:
             if noise_model is None:
                 raise RuntimeError(
                     "num_trajectories is provided without a noise_model.")
             ctx.numberTrajectories = num_trajectories
-        with ctx:
-            kernel(*args)
-        res = ctx.result
-
-        expVal = ctx.getExpectationValue()
-        if expVal == None:
-            sum = 0.0
-
-            def computeExpVal(term):
-                nonlocal sum
-                if term.is_identity():
-                    sum += term.evaluate_coefficient().real
-                else:
-                    sum += res.expectation(
-                        term.term_id) * term.evaluate_coefficient().real
-
-            for term in localOp:
-                computeExpVal(term)
-            expVal = sum
-
-        observeResult = cudaq_runtime.ObserveResult(expVal, localOp, res)
+        kernel_name = kernel.name if hasattr(kernel, 'name') else ''
+        policy = cudaq_runtime.ObservePolicy(ctx, kernel_name, localOp)
+        observeResult = cudaq_runtime.launch_observe(
+            policy, ctx, lambda args=args: kernel(*args))
         if not isinstance(spin_operator, list):
             if noise_model != None:
                 cudaq_runtime.unset_noise()
@@ -206,7 +197,6 @@ def observe(kernel,
             results.append(
                 cudaq_runtime.ObserveResult(exp_val, op,
                                             observeResult.counts()))
-        ctx.unset_jit_engine()
 
     if noise_model != None:
         cudaq_runtime.unset_noise()
@@ -214,6 +204,7 @@ def observe(kernel,
     return results
 
 
+@trace.traced
 def observe_async(kernel, spin_operator, *args, qpu_id=0, shots_count=-1):
     """
     Compute the expected value of the `spin_operator` with respect to the
@@ -249,7 +240,7 @@ def observe_async(kernel, spin_operator, *args, qpu_id=0, shots_count=-1):
     elif isa_dynamic_kernel(kernel):
         decorator = mk_decorator(kernel)
     else:
-        raise RuntimeRrror(
+        raise RuntimeError(
             "unrecognized kernel - did you forget the @kernel attribute?")
     if (decorator.launch_args_required() != 0) and (decorator.formal_arity()
                                                     != len(args)):
@@ -258,9 +249,9 @@ def observe_async(kernel, spin_operator, *args, qpu_id=0, shots_count=-1):
             str(len(args)) + " given and " + str(decorator.formal_arity()) +
             " expected.")
     shortName = decorator.uniqName
-    specMod, processedArgs = decorator.handle_call_arguments(*args)
-    returnTy = decorator.get_none_type()
-    return cudaq_runtime.observe_async_impl(shortName, specMod, returnTy,
+    processedArgs, module = decorator.prepare_call(*args)
+    return cudaq_runtime.observe_async_impl(shortName, module,
+                                            decorator.compiledModuleCache(),
                                             spin_operator, qpu_id, shots_count,
                                             *processedArgs)
 
@@ -320,12 +311,12 @@ def observe_parallel(kernel,
     elif isa_dynamic_kernel(kernel):
         decorator = mk_decorator(kernel)
     else:
-        raise RuntimeRrror(
+        raise RuntimeError(
             "unrecognized kernel - did you forget the @kernel attribute?")
     shortName = decorator.uniqName
-    specMod, processedArgs = decorator.handle_call_arguments(*args)
-    returnTy = decorator.get_none_type()
-    return cudaq_runtime.observe_parallel_impl(shortName, specMod, returnTy,
+    processedArgs, module = decorator.prepare_call(*args)
+    return cudaq_runtime.observe_parallel_impl(shortName, module,
+                                               decorator.compiledModuleCache(),
                                                execution, spin_operator,
                                                shots_count, noise_model,
                                                *processedArgs)

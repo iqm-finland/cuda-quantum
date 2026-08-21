@@ -35,8 +35,9 @@ during the build and after installation, and walks through the installation step
   either open-sourcing these components or making them available as separate downloads
   in the future. Even without these components, almost all features of CUDA-Q
   will be enabled in a source build, though some pieces may be less performant. 
-  At this time, the :ref:`multi-GPU state vector simulator <nvidia-mgpu-backend>` 
-  backend will not be included if you build CUDA-Q from source.
+  The NVIDIA state-vector simulators, including the
+  :ref:`multi-GPU backend <nvidia-mgpu-backend>`, are built from source when
+  `cuStateVec` 1.14 or newer is available.
 
 
 .. _compatibility-prebuilt-binaries:
@@ -86,7 +87,7 @@ In addition to the prerequisites listed above, you will need to install the
 following prerequisites in your build environment prior to proceeding with 
 the build as described in the subsequent sections:
 
-- Python version 3.10 or newer: If you intend to build CUDA-Q with Python
+- Python version 3.11 or newer: If you intend to build CUDA-Q with Python
   support, make sure the Python version on the build system matches the version
   on the host system. If you intend to only build the C++ support for
   CUDA-Q, the Python interpreter is required only for some of the 
@@ -216,7 +217,7 @@ and merely downloading the source code as ZIP archive hence will not work.
 Please follow the instructions in the respective subsection(s) to build the necessary 
 components for using CUDA-Q from C++ and/or Python.
 After the build, check that the GPU-accelerated components have been built by confirming
-that the file `nvidia.config` exists in the `$CUDAQ_INSTALL_PREFIX/targets` folder.
+that the file `nvidia.yml` exists in the `$CUDAQ_INSTALL_PREFIX/targets` folder.
 We also recommend checking the build log printed to the console to confirm that all desired 
 components have been built. 
 
@@ -330,7 +331,7 @@ You can then create a self-extracting archive with the command
     ./makeself.sh --gzip --sha256 --license cuda_quantum_assets/cudaq/LICENSE \
         cuda_quantum_assets install_cuda_quantum.$(uname -m) \
         "CUDA-Q toolkit for heterogeneous quantum-classical workflows" \
-        bash cudaq/migrate_assets.sh -t /opt/nvidia/cudaq
+        bash install.sh
 
 Installation on the Host
 ++++++++++++++++++++++++++++++++++++

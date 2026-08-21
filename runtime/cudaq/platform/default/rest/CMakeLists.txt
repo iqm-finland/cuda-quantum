@@ -6,8 +6,6 @@
 # the terms of the Apache License 2.0 which accompanies this distribution.     #
 # ============================================================================ #
 
-set(INTERFACE_POSITION_INDEPENDENT_CODE ON)
-
 message(STATUS "Building REST QPU.")
 add_library(cudaq-rest-qpu SHARED RemoteRESTQPU.cpp)
 
@@ -18,7 +16,7 @@ target_include_directories(cudaq-rest-qpu PRIVATE .
        $<BUILD_INTERFACE:${CMAKE_SOURCE_DIR}/runtime>
        $<INSTALL_INTERFACE:include>)
 
-if (AWSSDK_ROOT)
+if (AWSSDK_ROOT AND CUDAQ_ENABLE_BRAKET_BACKEND)
   set(SERVICE_COMPONENTS braket s3-crt sts)
   find_package(AWSSDK REQUIRED COMPONENTS ${SERVICE_COMPONENTS})
 else()
@@ -34,7 +32,9 @@ target_link_libraries(cudaq-rest-qpu
     fmt::fmt-header-only
     cudaq
     cudaq-platform-default
+    nvqir
+    ZLIB::ZLIB
+    cudaqMLIR
     ${AWSSDK_LINK_LIBRARIES})
 
-install(TARGETS cudaq-rest-qpu DESTINATION lib)
-
+install(TARGETS cudaq-rest-qpu DESTINATION lib COMPONENT Runtime)

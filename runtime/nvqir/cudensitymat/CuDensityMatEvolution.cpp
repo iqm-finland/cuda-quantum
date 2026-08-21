@@ -13,14 +13,15 @@
 #include "CuDensityMatState.h"
 #include "CuDensityMatTimeStepper.h"
 #include "CuDensityMatUtils.h"
+#include "common/EvolveResult.h"
 #include "common/FmtCore.h"
-#include "cudaq/algorithms/evolve_internal.h"
 #include "cudaq/algorithms/integrator.h"
 #include <iterator>
+#include <numeric>
 #include <random>
 #include <stdexcept>
 
-namespace cudaq::__internal__ {
+namespace cudaq::detail {
 template <typename Key, typename Value>
 std::map<Key, Value>
 convertToOrderedMap(const std::unordered_map<Key, Value> &unorderedMap) {
@@ -203,6 +204,30 @@ static CuDensityMatState *asCudmState(cudaq::state &cudaqState) {
   return cudmState;
 }
 
+static state prepareInitialState(cudensitymatHandle_t handle,
+                                 const state &initialState,
+                                 const std::vector<int64_t> &dims,
+                                 bool requireDensityMatrix) {
+  auto *cudmState = asCudmState(const_cast<state &>(initialState));
+  if (!cudmState->is_initialized()) {
+    const auto stateVectorSize = std::accumulate(
+        dims.begin(), dims.end(), std::size_t{1}, std::multiplies<>());
+    if (requireDensityMatrix &&
+        cudmState->get_element_count() == stateVectorSize)
+      return state(new CuDensityMatState(cudmState->to_density_matrix(dims)));
+    cudmState->initialize_cudm(handle, dims, /*batchSize=*/1);
+  }
+  if (requireDensityMatrix && !cudmState->is_density_matrix())
+    return state(new CuDensityMatState(cudmState->to_density_matrix()));
+  return initialState;
+}
+
+static bool requiresDensityMatrix(const super_op &superOp) {
+  return std::any_of(
+      superOp.begin(), superOp.end(),
+      [](const auto &operatorPair) { return operatorPair.second.has_value(); });
+}
+
 static evolve_result
 evolveSingleImpl(const std::vector<int64_t> &dims, const schedule &schedule,
                  base_integrator &integrator,
@@ -240,7 +265,7 @@ evolveSingleImpl(const std::vector<int64_t> &dims, const schedule &schedule,
     }
   }
 
-  if (cudaq::details::should_log(cudaq::details::LogLevel::trace))
+  if (cudaq::detail::should_log(cudaq::detail::LogLevel::trace))
     cudaq::dynamics::dumpPerfTrace();
 
   if (storeIntermediateResults == cudaq::IntermediateResultSave::All) {
@@ -294,19 +319,12 @@ evolve_result evolveSingle(
   for (const auto &[id, dim] : dimensions)
     dims.emplace_back(dim);
 
-  auto *cudmState = asCudmState(const_cast<state &>(initialState));
-  if (!cudmState->is_initialized())
-    cudmState->initialize_cudm(handle, dims, /*batchSize=*/1);
-
-  state initial_State = [&]() {
-    if (!collapseOperators.empty() && !cudmState->is_density_matrix())
-      return state(new CuDensityMatState(cudmState->to_density_matrix()));
-    return initialState;
-  }();
+  auto preparedInitialState = prepareInitialState(handle, initialState, dims,
+                                                  !collapseOperators.empty());
 
   SystemDynamics system(dims, hamiltonian, collapseOperators);
   cudaq::integrator_helper::init_system_dynamics(integrator, system, schedule);
-  integrator.setState(initial_State, 0.0);
+  integrator.setState(preparedInitialState, 0.0);
   return evolveSingleImpl(dims, schedule, integrator, observables,
                           storeIntermediateResults);
 }
@@ -543,13 +561,12 @@ evolveSingle(const super_op &superOp, const cudaq::dimension_map &dimensionsMap,
   for (const auto &[id, dim] : dimensions)
     dims.emplace_back(dim);
 
-  auto *cudmState = asCudmState(const_cast<state &>(initialState));
-  if (!cudmState->is_initialized())
-    cudmState->initialize_cudm(handle, dims, /*batchSize=*/1);
+  auto preparedInitialState = prepareInitialState(
+      handle, initialState, dims, requiresDensityMatrix(superOp));
 
   cudaq::integrator_helper::init_system_dynamics(integrator, {superOp}, dims,
                                                  schedule);
-  integrator.setState(initialState, 0.0);
+  integrator.setState(preparedInitialState, 0.0);
 
   return evolveSingleImpl(dims, schedule, integrator, observables,
                           storeIntermediateResults);
@@ -565,13 +582,7 @@ evolveSingle(const super_op &superOp, const cudaq::dimension_map &dimensionsMap,
   LOG_API_TIME();
   cudensitymatHandle_t handle =
       dynamics::Context::getCurrentContext()->getHandle();
-  const bool has_right_apply = [&]() {
-    for (const auto &[leftOp, rightOp] : superOp) {
-      if (rightOp.has_value())
-        return true;
-    }
-    return false;
-  }();
+  const bool has_right_apply = requiresDensityMatrix(superOp);
   auto cudmState = CuDensityMatState::createInitialState(
       handle, initial_state, dimensionsMap, has_right_apply);
   return evolveSingle(superOp, dimensionsMap, schedule,
@@ -599,13 +610,7 @@ evolveBatched(const super_op &superOp,
   for (auto &initialState : initialStates) {
     states.emplace_back(asCudmState(const_cast<state &>(initialState)));
   }
-  const bool has_right_apply = [&]() {
-    for (const auto &[leftOp, rightOp] : superOp) {
-      if (rightOp.has_value())
-        return true;
-    }
-    return false;
-  }();
+  const bool has_right_apply = requiresDensityMatrix(superOp);
   auto batchedState = CuDensityMatState::createBatchedState(
       handle, states, dims, has_right_apply);
   cudaq::integrator_helper::init_system_dynamics(integrator, {superOp}, dims,
@@ -723,14 +728,9 @@ evolveBatched(const std::vector<sum_op<cudaq::matrix_handler>> &hamiltonians,
                         std::make_move_iterator(results.begin()),
                         std::make_move_iterator(results.end()));
     } else {
-      if (!states[0]->is_initialized())
-        states[0]->initialize_cudm(handle, dims, /*batchSize=*/1);
-      state canonicalize_initial_state = [&]() {
-        if (isMasterEquation && !states[0]->is_density_matrix())
-          return state(new CuDensityMatState(states[0]->to_density_matrix()));
-        return initial_states[i];
-      }();
-      integrator.setState(canonicalize_initial_state, 0.0);
+      auto preparedInitialState = prepareInitialState(handle, initial_states[i],
+                                                      dims, isMasterEquation);
+      integrator.setState(preparedInitialState, 0.0);
       auto result = evolveSingleImpl(dims, schedule, integrator, observables,
                                      store_intermediate_results);
       allResults.emplace_back(std::move(result));
@@ -791,15 +791,8 @@ evolveBatched(const std::vector<super_op> &superOps,
     params[param] = schedule.get_value_function()(param, 0.0);
   }
 
-  const bool has_right_apply = [&]() {
-    for (const auto &superOp : superOps) {
-      for (const auto &[leftOp, rightOp] : superOp) {
-        if (rightOp.has_value())
-          return true;
-      }
-    }
-    return false;
-  }();
+  const bool has_right_apply =
+      std::any_of(superOps.begin(), superOps.end(), requiresDensityMatrix);
   // Run batched evolution up to the batch size and concatenate the results.
   std::vector<evolve_result> allResults;
   allResults.reserve(superOps.size());
@@ -842,16 +835,9 @@ evolveBatched(const std::vector<super_op> &superOps,
                         std::make_move_iterator(results.begin()),
                         std::make_move_iterator(results.end()));
     } else {
-      if (!states[0]->is_initialized())
-        states[0]->initialize_cudm(handle, dims, /*batchSize=*/1);
-
-      state canonicalize_initial_state = [&]() {
-        if (has_right_apply && !states[0]->is_density_matrix())
-          return state(new CuDensityMatState(states[0]->to_density_matrix()));
-        return initial_states[i];
-      }();
-
-      integrator.setState(canonicalize_initial_state, 0.0);
+      auto preparedInitialState =
+          prepareInitialState(handle, initial_states[i], dims, has_right_apply);
+      integrator.setState(preparedInitialState, 0.0);
       auto result = evolveSingleImpl(dims, schedule, integrator, observables,
                                      store_intermediate_results);
       allResults.emplace_back(std::move(result));
@@ -860,4 +846,4 @@ evolveBatched(const std::vector<super_op> &superOps,
 
   return allResults;
 }
-} // namespace cudaq::__internal__
+} // namespace cudaq::detail

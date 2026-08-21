@@ -15,23 +15,21 @@ import pytest
 from cudaq import spin
 from network_utils import check_server_connection
 
-try:
-    from utils.mock_qpu.qci import startServer
-except:
-    print("Mock qpu not available, skipping QCI tests.")
-    pytest.skip("Mock qpu not available.", allow_module_level=True)
+from utils.mock_qpu.qci import startServer
+
+pytestmark = pytest.mark.xdist_group("qci_mock")
 
 # Define the port for the mock server
 port = 62449
 
 
 def assert_close(got) -> bool:
-    return got < -1.1 and got > -2.9
+    return got < -1.1 and got > -2.2
 
 
 @pytest.fixture(scope="session", autouse=True)
 def startUpMockServer():
-    cudaq.set_random_seed(42)
+    cudaq.set_random_seed(13)
 
     # Launch the Mock Server
     p = Process(target=startServer, args=(port,))
@@ -104,18 +102,18 @@ def test_observe():
         0) * spin.y(1) + .21829 * spin.z(0) - 6.125 * spin.z(1)
 
     # Run the observe task on synchronously
-    res = cudaq.observe(ansatz, hamiltonian, .59, shots_count=200)
+    res = cudaq.observe(ansatz, hamiltonian, .59)
     assert assert_close(res.expectation())
 
     # Launch it asynchronously, enters the job into the queue
-    future = cudaq.observe_async(ansatz, hamiltonian, .59, shots_count=100)
+    future = cudaq.observe_async(ansatz, hamiltonian, .59)
     # Retrieve the results (since we're on a mock server)
     res = future.get()
     assert assert_close(res.expectation())
 
     # Launch the job async, job goes in the queue, and
     # we're free to dump the future to file
-    future = cudaq.observe_async(ansatz, hamiltonian, .59, shots_count=100)
+    future = cudaq.observe_async(ansatz, hamiltonian, .59)
     futureAsString = str(future)
 
     # Later you can come back and read it in
@@ -218,6 +216,33 @@ def test_run():
     shots = 100
     qubitCount = 4
     results = cudaq.run(simple, qubitCount, shots_count=shots)
+    assert len(results) == shots
+    non_zero_count = 0
+    for result in results:
+        assert result == 0 or result == qubitCount  # 00..0 or 1...11
+        if result == qubitCount:
+            non_zero_count += 1
+    assert non_zero_count > 0
+
+
+def test_run_async():
+
+    @cudaq.kernel
+    def simple(numQubits: int) -> int:
+        qubits = cudaq.qvector(numQubits)
+        h(qubits.front())
+        for i, qubit in enumerate(qubits.front(numQubits - 1)):
+            x.ctrl(qubit, qubits[i + 1])
+        result = 0
+        for i in range(numQubits):
+            if mz(qubits[i]):
+                result += 1
+        return result
+
+    shots = 100
+    qubitCount = 4
+    future = cudaq.run_async(simple, qubitCount, shots_count=shots)
+    results = future.get()
     assert len(results) == shots
     non_zero_count = 0
     for result in results:

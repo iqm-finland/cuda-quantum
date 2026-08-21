@@ -25,72 +25,92 @@ def test_synth_and_translate():
     print(cudaq.translate(ghz_synth, format='qir-base'))
 
 
-# CHECK-LABEL: define void @__nvqpp__mlirgen__ghz
-# CHECK-SAME:    (i64 %[[VAL_0:.*]]) {
-# CHECK:         %[[VAL_1:.*]] = call %[[VAL_2:.*]]* @__quantum__rt__qubit_allocate_array(i64 3)
-# CHECK:         %[[VAL_3:.*]] = call %[[VAL_4:.*]]** @__quantum__rt__array_get_element_ptr_1d(%[[VAL_2]]* %[[VAL_1]], i64 0)
-# CHECK:         %[[VAL_5:.*]] = load %[[VAL_4]]*, %[[VAL_4]]** %[[VAL_3]], align 8
-# CHECK:         call void @__quantum__qis__h(%[[VAL_4]]* %[[VAL_5]])
-# CHECK:         %[[VAL_6:.*]] = alloca [2 x i64], align 8
-# CHECK:         %[[VAL_7:.*]] = bitcast [2 x i64]* %[[VAL_6]] to i64*
-# CHECK:         store i64 0, i64* %[[VAL_7]], align 8
-# CHECK:         %[[VAL_8:.*]] = getelementptr [2 x i64], [2 x i64]* %[[VAL_6]], i32 0, i32 1
-# CHECK:         store i64 1, i64* %[[VAL_8]], align 8
-# CHECK:         %[[VAL_9:.*]] = load i64, i64* %[[VAL_7]], align 8
-# CHECK:         %[[VAL_10:.*]] = add i64 %[[VAL_9]], 1
-# CHECK:         %[[VAL_11:.*]] = call %[[VAL_4]]** @__quantum__rt__array_get_element_ptr_1d(%[[VAL_2]]* %[[VAL_1]], i64 %[[VAL_10]])
-# CHECK:         %[[VAL_12:.*]] = load %[[VAL_4]]*, %[[VAL_4]]** %[[VAL_11]], align 8
-# CHECK:         %[[VAL_13:.*]] = bitcast %[[VAL_4]]* %[[VAL_5]] to i8*
-# CHECK:         %[[VAL_14:.*]] = bitcast %[[VAL_4]]* %[[VAL_12]] to i8*
-# CHECK:         call void (i64, i64, i64, i64, i8*, ...) @generalizedInvokeWithRotationsControlsTargets(i64 0, i64 0, i64 1, i64 1, i8* bitcast (void (%[[VAL_2]]*, %[[VAL_4]]*)* @__quantum__qis__x__ctl to i8*), i8* %[[VAL_13]], i8* %[[VAL_14]])
-# CHECK:         %[[VAL_15:.*]] = load i64, i64* %[[VAL_8]], align 8
-# CHECK:         %[[VAL_16:.*]] = call %[[VAL_4]]** @__quantum__rt__array_get_element_ptr_1d(%[[VAL_2]]* %[[VAL_1]], i64 1)
-# CHECK:         %[[VAL_17:.*]] = load %[[VAL_4]]*, %[[VAL_4]]** %[[VAL_16]], align 8
-# CHECK:         %[[VAL_18:.*]] = add i64 %[[VAL_15]], 1
-# CHECK:         %[[VAL_19:.*]] = call %[[VAL_4]]** @__quantum__rt__array_get_element_ptr_1d(%[[VAL_2]]* %[[VAL_1]], i64 %[[VAL_18]])
-# CHECK:         %[[VAL_20:.*]] = load %[[VAL_4]]*, %[[VAL_4]]** %[[VAL_19]], align 8
-# CHECK:         %[[VAL_21:.*]] = bitcast %[[VAL_4]]* %[[VAL_17]] to i8*
-# CHECK:         %[[VAL_22:.*]] = bitcast %[[VAL_4]]* %[[VAL_20]] to i8*
-# CHECK:         call void (i64, i64, i64, i64, i8*, ...) @generalizedInvokeWithRotationsControlsTargets(i64 0, i64 0, i64 1, i64 1, i8* bitcast (void (%[[VAL_2]]*, %[[VAL_4]]*)* @__quantum__qis__x__ctl to i8*), i8* %[[VAL_21]], i8* %[[VAL_22]])
-# CHECK:         call void @__quantum__rt__qubit_release_array(%[[VAL_2]]* %[[VAL_1]])
+# CHECK-LABEL: define void @__nvqpp__mlirgen__ghz..0x
+# CHECK-SAME:      %[[VAL_0:.*]])
+# CHECK:         %[[VAL_1:.*]] = call ptr @__quantum__rt__qubit_allocate()
+# CHECK:         %[[VAL_2:.*]] = call ptr @__quantum__rt__qubit_allocate()
+# CHECK:         %[[VAL_3:.*]] = call ptr @__quantum__rt__qubit_allocate()
+# CHECK:         %[[VAL_4:.*]] = call ptr @__quantum__rt__array_create_1d(i32 8, i64 1)
+# CHECK:         %[[VAL_5:.*]] = call ptr @__quantum__rt__array_get_element_ptr_1d(ptr %[[VAL_4]], i64 0)
+# CHECK:         store ptr %[[VAL_1]], ptr %[[VAL_5]]
+# CHECK:         %[[VAL_6:.*]] = call ptr @__quantum__rt__array_create_1d(i32 8, i64 1)
+# CHECK:         %[[VAL_7:.*]] = call ptr @__quantum__rt__array_get_element_ptr_1d(ptr %[[VAL_6]], i64 0)
+# CHECK:         store ptr %[[VAL_2]], ptr %[[VAL_7]]
+# CHECK:         %[[VAL_8:.*]] = call ptr @__quantum__rt__array_concatenate(ptr %[[VAL_4]], ptr %[[VAL_6]])
+# CHECK:         %[[VAL_9:.*]] = call ptr @__quantum__rt__array_create_1d(i32 8, i64 1)
+# CHECK:         %[[VAL_10:.*]] = call ptr @__quantum__rt__array_get_element_ptr_1d(ptr %[[VAL_9]], i64 0)
+# CHECK:         store ptr %[[VAL_3]], ptr %[[VAL_10]]
+# CHECK:         %[[VAL_11:.*]] = call ptr @__quantum__rt__array_concatenate(ptr %[[VAL_8]], ptr %[[VAL_9]])
+# CHECK:         call void @__quantum__qis__h(ptr %[[VAL_1]])
+# CHECK:         %[[VAL_12:.*]] = alloca [2 x i64]
+# CHECK:         store i64 0, ptr %[[VAL_12]]
+# CHECK:         %[[VAL_13:.*]] = getelementptr [2 x i64], ptr %[[VAL_12]], i32 0, i32 1
+# CHECK:         store i64 1, ptr %[[VAL_13]]
+# CHECK:         %[[VAL_14:.*]] = load i64, ptr %[[VAL_12]]
+# CHECK:         %[[VAL_15:.*]] = add i64 %[[VAL_14]], 1
+# CHECK:         %[[VAL_16:.*]] = call ptr @__quantum__rt__array_get_element_ptr_1d(ptr %[[VAL_11]], i64 %[[VAL_15]])
+# CHECK:         %[[VAL_17:.*]] = load ptr, ptr %[[VAL_16]]
+# CHECK:         call void (i64, i64, i64, i64, ptr, ...) @generalizedInvokeWithRotationsControlsTargets(i64 0, i64 0, i64 1, i64 1, ptr @__quantum__qis__x__ctl, ptr %[[VAL_1]], ptr %[[VAL_17]])
+# CHECK:         %[[VAL_18:.*]] = load i64, ptr %[[VAL_13]]
+# CHECK:         %[[VAL_19:.*]] = add i64 %[[VAL_18]], 1
+# CHECK:         %[[VAL_20:.*]] = call ptr @__quantum__rt__array_get_element_ptr_1d(ptr %[[VAL_11]], i64 %[[VAL_19]])
+# CHECK:         %[[VAL_21:.*]] = load ptr, ptr %[[VAL_20]]
+# CHECK:         call void (i64, i64, i64, i64, ptr, ...) @generalizedInvokeWithRotationsControlsTargets(i64 0, i64 0, i64 1, i64 1, ptr @__quantum__qis__x__ctl, ptr %[[VAL_2]], ptr %[[VAL_21]])
+# CHECK:         call void @__quantum__rt__qubit_release(ptr %[[VAL_1]])
+# CHECK:         call void @__quantum__rt__qubit_release(ptr %[[VAL_2]])
+# CHECK:         call void @__quantum__rt__qubit_release(ptr %[[VAL_3]])
 # CHECK:         ret void
 # CHECK:       }
 
-# CHECK-LABEL: define void @__nvqpp__mlirgen__ghz
-# CHECK-SAME:    (i64 %[[VAL_0:.*]])
-# CHECK:         call void @__quantum__qis__h__body(%[[VAL_1:.*]]* null)
-# CHECK:         %[[VAL_2:.*]] = alloca [4 x i64], align 8
-# CHECK:         %[[VAL_3:.*]] = bitcast [4 x i64]* %[[VAL_2]] to i64*
-# CHECK:         store i64 0, i64* %[[VAL_3]], align 8
-# CHECK:         %[[VAL_4:.*]] = getelementptr [4 x i64], [4 x i64]* %[[VAL_2]], i32 0, i32 1
-# CHECK:         store i64 1, i64* %[[VAL_4]], align 8
-# CHECK:         %[[VAL_5:.*]] = getelementptr [4 x i64], [4 x i64]* %[[VAL_2]], i32 0, i32 2
-# CHECK:         store i64 2, i64* %[[VAL_5]], align 8
-# CHECK:         %[[VAL_6:.*]] = getelementptr [4 x i64], [4 x i64]* %[[VAL_2]], i32 0, i32 3
-# CHECK:         store i64 3, i64* %[[VAL_6]], align 8
-# CHECK:         %[[VAL_7:.*]] = load i64, i64* %[[VAL_3]], align 8
-# CHECK:         %[[VAL_8:.*]] = add i64 %[[VAL_7]], 1
-# CHECK:         %[[VAL_9:.*]] = getelementptr [5 x i64], [5 x i64]* @__nvqpp__mlirgen__ghz..{{.*}}.rodata_0, i32 0, i64 %[[VAL_8]]
-# CHECK:         %[[VAL_10:.*]] = load i64, i64* %[[VAL_9]], align 8
-# CHECK:         %[[VAL_11:.*]] = inttoptr i64 %[[VAL_10]] to %[[VAL_1]]*
-# CHECK:         call void @__quantum__qis__cnot__body(%[[VAL_1]]* null, %[[VAL_1]]* %[[VAL_11]])
-# CHECK:         %[[VAL_12:.*]] = load i64, i64* %[[VAL_4]], align 8
-# CHECK:         %[[VAL_13:.*]] = add i64 %[[VAL_12]], 1
-# CHECK:         %[[VAL_14:.*]] = getelementptr [5 x i64], [5 x i64]* @__nvqpp__mlirgen__ghz..{{.*}}.rodata_0, i32 0, i64 %[[VAL_13]]
-# CHECK:         %[[VAL_15:.*]] = load i64, i64* %[[VAL_14]], align 8
-# CHECK:         %[[VAL_16:.*]] = inttoptr i64 %[[VAL_15]] to %[[VAL_1]]*
-# CHECK:         call void @__quantum__qis__cnot__body(%[[VAL_1]]* inttoptr (i64 1 to %[[VAL_1]]*), %[[VAL_1]]* %[[VAL_16]])
-# CHECK:         %[[VAL_17:.*]] = load i64, i64* %[[VAL_5]], align 8
-# CHECK:         %[[VAL_18:.*]] = add i64 %[[VAL_17]], 1
-# CHECK:         %[[VAL_19:.*]] = getelementptr [5 x i64], [5 x i64]* @__nvqpp__mlirgen__ghz..{{.*}}.rodata_0, i32 0, i64 %[[VAL_18]]
-# CHECK:         %[[VAL_20:.*]] = load i64, i64* %[[VAL_19]], align 8
-# CHECK:         %[[VAL_21:.*]] = inttoptr i64 %[[VAL_20]] to %[[VAL_1]]*
-# CHECK:         call void @__quantum__qis__cnot__body(%[[VAL_1]]* inttoptr (i64 2 to %[[VAL_1]]*), %[[VAL_1]]* %[[VAL_21]])
-# CHECK:         %[[VAL_22:.*]] = load i64, i64* %[[VAL_6]], align 8
-# CHECK:         %[[VAL_23:.*]] = add i64 %[[VAL_22]], 1
-# CHECK:         %[[VAL_24:.*]] = getelementptr [5 x i64], [5 x i64]* @__nvqpp__mlirgen__ghz..{{.*}}.rodata_0, i32 0, i64 %[[VAL_23]]
-# CHECK:         %[[VAL_25:.*]] = load i64, i64* %[[VAL_24]], align 8
-# CHECK:         %[[VAL_26:.*]] = inttoptr i64 %[[VAL_25]] to %[[VAL_1]]*
-# CHECK:         call void @__quantum__qis__cnot__body(%[[VAL_1]]* inttoptr (i64 3 to %[[VAL_1]]*), %[[VAL_1]]* %[[VAL_26]])
+# CHECK-LABEL: define void @__nvqpp__mlirgen__ghz..0x
+# CHECK-SAME:      %[[VAL_0:.*]])
+# CHECK:         %[[VAL_1:.*]] = call ptr @__quantum__rt__array_create_1d(i32 8, i64 1)
+# CHECK:         %[[VAL_2:.*]] = call ptr @__quantum__rt__array_get_element_ptr_1d(ptr %[[VAL_1]], i64 0)
+# CHECK:         store ptr null, ptr %[[VAL_2]]
+# CHECK:         %[[VAL_3:.*]] = call ptr @__quantum__rt__array_create_1d(i32 8, i64 1)
+# CHECK:         %[[VAL_4:.*]] = call ptr @__quantum__rt__array_get_element_ptr_1d(ptr %[[VAL_3]], i64 0)
+# CHECK:         store ptr inttoptr (i64 1 to ptr), ptr %[[VAL_4]]
+# CHECK:         %[[VAL_5:.*]] = call ptr @__quantum__rt__array_concatenate(ptr %[[VAL_1]], ptr %[[VAL_3]])
+# CHECK:         %[[VAL_6:.*]] = call ptr @__quantum__rt__array_create_1d(i32 8, i64 1)
+# CHECK:         %[[VAL_7:.*]] = call ptr @__quantum__rt__array_get_element_ptr_1d(ptr %[[VAL_6]], i64 0)
+# CHECK:         store ptr inttoptr (i64 2 to ptr), ptr %[[VAL_7]]
+# CHECK:         %[[VAL_8:.*]] = call ptr @__quantum__rt__array_concatenate(ptr %[[VAL_5]], ptr %[[VAL_6]])
+# CHECK:         %[[VAL_9:.*]] = call ptr @__quantum__rt__array_create_1d(i32 8, i64 1)
+# CHECK:         %[[VAL_10:.*]] = call ptr @__quantum__rt__array_get_element_ptr_1d(ptr %[[VAL_9]], i64 0)
+# CHECK:         store ptr inttoptr (i64 3 to ptr), ptr %[[VAL_10]]
+# CHECK:         %[[VAL_11:.*]] = call ptr @__quantum__rt__array_concatenate(ptr %[[VAL_8]], ptr %[[VAL_9]])
+# CHECK:         %[[VAL_12:.*]] = call ptr @__quantum__rt__array_create_1d(i32 8, i64 1)
+# CHECK:         %[[VAL_13:.*]] = call ptr @__quantum__rt__array_get_element_ptr_1d(ptr %[[VAL_12]], i64 0)
+# CHECK:         store ptr inttoptr (i64 4 to ptr), ptr %[[VAL_13]]
+# CHECK:         %[[VAL_14:.*]] = call ptr @__quantum__rt__array_concatenate(ptr %[[VAL_11]], ptr %[[VAL_12]])
+# CHECK:         call void @__quantum__qis__h__body(ptr null)
+# CHECK:         %[[VAL_15:.*]] = alloca [4 x i64]
+# CHECK:         store i64 0, ptr %[[VAL_15]]
+# CHECK:         %[[VAL_16:.*]] = getelementptr [4 x i64], ptr %[[VAL_15]], i32 0, i32 1
+# CHECK:         store i64 1, ptr %[[VAL_16]]
+# CHECK:         %[[VAL_17:.*]] = getelementptr [4 x i64], ptr %[[VAL_15]], i32 0, i32 2
+# CHECK:         store i64 2, ptr %[[VAL_17]]
+# CHECK:         %[[VAL_18:.*]] = getelementptr [4 x i64], ptr %[[VAL_15]], i32 0, i32 3
+# CHECK:         store i64 3, ptr %[[VAL_18]]
+# CHECK:         %[[VAL_19:.*]] = load i64, ptr %[[VAL_15]]
+# CHECK:         %[[VAL_20:.*]] = add i64 %[[VAL_19]], 1
+# CHECK:         %[[VAL_21:.*]] = call ptr @__quantum__rt__array_get_element_ptr_1d(ptr %[[VAL_14]], i64 %[[VAL_20]])
+# CHECK:         %[[VAL_22:.*]] = load ptr, ptr %[[VAL_21]]
+# CHECK:         call void @__quantum__qis__cnot__body(ptr null, ptr %[[VAL_22]])
+# CHECK:         %[[VAL_23:.*]] = load i64, ptr %[[VAL_16]]
+# CHECK:         %[[VAL_24:.*]] = add i64 %[[VAL_23]], 1
+# CHECK:         %[[VAL_25:.*]] = call ptr @__quantum__rt__array_get_element_ptr_1d(ptr %[[VAL_14]], i64 %[[VAL_24]])
+# CHECK:         %[[VAL_26:.*]] = load ptr, ptr %[[VAL_25]]
+# CHECK:         call void @__quantum__qis__cnot__body(ptr inttoptr (i64 1 to ptr), ptr %[[VAL_26]])
+# CHECK:         %[[VAL_27:.*]] = load i64, ptr %[[VAL_17]]
+# CHECK:         %[[VAL_28:.*]] = add i64 %[[VAL_27]], 1
+# CHECK:         %[[VAL_29:.*]] = call ptr @__quantum__rt__array_get_element_ptr_1d(ptr %[[VAL_14]], i64 %[[VAL_28]])
+# CHECK:         %[[VAL_30:.*]] = load ptr, ptr %[[VAL_29]]
+# CHECK:         call void @__quantum__qis__cnot__body(ptr inttoptr (i64 2 to ptr), ptr %[[VAL_30]])
+# CHECK:         %[[VAL_31:.*]] = load i64, ptr %[[VAL_18]]
+# CHECK:         %[[VAL_32:.*]] = add i64 %[[VAL_31]], 1
+# CHECK:         %[[VAL_33:.*]] = call ptr @__quantum__rt__array_get_element_ptr_1d(ptr %[[VAL_14]], i64 %[[VAL_32]])
+# CHECK:         %[[VAL_34:.*]] = load ptr, ptr %[[VAL_33]]
+# CHECK:         call void @__quantum__qis__cnot__body(ptr inttoptr (i64 3 to ptr), ptr %[[VAL_34]])
 # CHECK:         ret void
 # CHECK:       }

@@ -14,9 +14,11 @@
 #   bash scripts/build_wheel.sh              # macOS only (CPU only)
 #   bash scripts/build_wheel.sh -c 12        # Linux: build cu12 wheel
 #   bash scripts/build_wheel.sh -c 13        # Linux: build cu13 wheel
+#   bash scripts/build_wheel.sh -d           # Build cudaq-devel wheel (dev SDK)
 #
 # Options:
 #   -c <cuda_version>: CUDA variant, 12 or 13 (Linux only)
+#   -d: Build cudaq-devel dev SDK instead of runtime wheel
 #   -o <output_dir>: Output directory for wheels (default: dist)
 #   -a <assets_dir>: Directory containing external simulator assets (default: assets)
 #   -t: Run validation tests after build
@@ -53,14 +55,18 @@ install_prereqs=false
 install_toolchain=""
 incremental=false
 verbose=false
+build_devel=false
 
 # Parse command line arguments
 __optind__=$OPTIND
 OPTIND=1
-while getopts ":c:o:a:tqpT:iv" opt; do
+while getopts ":c:o:a:tqpT:ivd" opt; do
     case $opt in
     c)
         cuda_variant="$OPTARG"
+        ;;
+    d)
+        build_devel=true
         ;;
     o)
         output_dir="$OPTARG"
@@ -132,7 +138,11 @@ if $install_prereqs; then
 fi
 
 # Determine CUDA variant
-if [ "$platform" = "Darwin" ]; then
+if $build_devel; then
+    # Devel wheels are CUDA-agnostic; still compile against a CUDA toolkit on Linux.
+    cuda_variant="13"
+    echo "Building cudaq-devel wheel"
+elif [ "$platform" = "Darwin" ]; then
     # macOS: CPU-only build. Uses cu13 pyproject but CUDA deps are excluded
     # via sys_platform markers in pyproject.toml.cu13. The cu13 variant is
     # the default fallback when no CUDA is detected (applies to Linux too).
@@ -160,16 +170,28 @@ fi
 echo "Using Python: $($python --version)"
 
 # Copy appropriate pyproject.toml
-pyproject_src="pyproject.toml.cu${cuda_variant}"
-if [ ! -f "$pyproject_src" ]; then
-    echo "Error: $pyproject_src not found" >&2
-    exit 1
+rm -f pyproject.toml
+if $build_devel; then
+    pyproject_src="pyproject.toml.devel"
+    if [ ! -f "$pyproject_src" ]; then
+        echo "Error: $pyproject_src not found" >&2
+        exit 1
+    fi
+    version="${SETUPTOOLS_SCM_PRETEND_VERSION:-${CUDA_QUANTUM_VERSION:-0.0.0}}"
+    sed "s/__CUDAQ_VERSION__/${version}/g" "$pyproject_src" > pyproject.toml
+    echo "Using pyproject: $pyproject_src (cudaq==${version})"
+else
+    pyproject_src="pyproject.toml.cu${cuda_variant}"
+    if [ ! -f "$pyproject_src" ]; then
+        echo "Error: $pyproject_src not found" >&2
+        exit 1
+    fi
+    echo "Using pyproject: $pyproject_src"
+    cp -f "$pyproject_src" pyproject.toml 2>/dev/null || true
 fi
-echo "Using pyproject: $pyproject_src"
-cp -f "$pyproject_src" pyproject.toml 2>/dev/null || true
 
-# Generate README.md from template
-if [ -f "python/README.md.in" ]; then
+# Generate README.md from template (runtime wheels only)
+if ! $build_devel && [ -f "python/README.md.in" ]; then
   echo "Generating README from template..."
   cp python/README.md.in python/README.md
   
@@ -244,6 +266,9 @@ if $incremental; then
     rm -rf dist/*.whl "$output_dir"/*.whl 2>/dev/null || true
 else
     rm -rf _skbuild dist/*.whl "$output_dir"/*.whl 2>/dev/null || true
+    if $build_devel; then
+        rm -rf _skbuild_devel 2>/dev/null || true
+    fi
 fi
 mkdir -p "$output_dir"
 
@@ -274,13 +299,9 @@ if [ -z "$OpenMP_libomp_LIBRARY_PATH" ] && [ "$platform" = "Darwin" ]; then
 fi
 if [ -n "$OpenMP_libomp_LIBRARY_PATH" ]; then
     omp_header_dir=$(find "$OpenMP_SEARCH_PREFIX" -name 'omp.h' -print -quit 2>/dev/null | xargs dirname)
-    # Apple Clang requires -Xpreprocessor -fopenmp; LLVM Clang/GCC use -fopenmp directly
-    # Use -idirafter to add omp.h path AFTER system headers (avoids conflicts with clang's stdint.h)
-    if ${CXX:-c++} --version 2>&1 | grep -q "Apple clang"; then
-        OpenMP_FLAGS="${OpenMP_FLAGS:--Xpreprocessor -fopenmp -idirafter $omp_header_dir}"
-    else
-        OpenMP_FLAGS="${OpenMP_FLAGS:--fopenmp -idirafter $omp_header_dir}"
-    fi
+    # Use -idirafter so omp.h is searched after system headers (avoids a
+    # conflict with clang's stdint.h on macOS).
+    OpenMP_FLAGS="${OpenMP_FLAGS:--fopenmp -idirafter $omp_header_dir}"
     echo "OpenMP found: $OpenMP_libomp_LIBRARY_PATH"
 else
     echo "OpenMP not found - wheel will be built without OpenMP parallelization"
@@ -303,6 +324,16 @@ CMAKE_ARGS="$CMAKE_ARGS ${OpenMP_FLAGS:+-DOpenMP_CXX_FLAGS=\"$OpenMP_FLAGS\"}"
 if $verbose && [ -n "$OpenMP_libomp_LIBRARY_PATH" ]; then
     echo "OpenMP CMAKE_ARGS: $CMAKE_ARGS"
 fi
+# Check for ccache and add compiler launcher to CMAKE_ARGS
+if [ -x "$(command -v ccache)" ]; then
+    echo "ccache detected enabling in cmake"
+    CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_C_COMPILER_LAUNCHER=ccache"
+    CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_CXX_COMPILER_LAUNCHER=ccache"
+    if [ -n "$CUDACXX" ]; then
+        CMAKE_ARGS="$CMAKE_ARGS -DCMAKE_CUDA_COMPILER_LAUNCHER=ccache"
+    fi
+fi
+
 export CMAKE_ARGS
 
 # Build the wheel
@@ -320,7 +351,12 @@ else
 fi
 
 # Find the built wheel
-wheel_file=$(ls dist/cuda_quantum*.whl 2>/dev/null | head -1)
+if $build_devel; then
+    wheel_glob="dist/cudaq_devel*.whl"
+else
+    wheel_glob="dist/cuda_quantum*.whl"
+fi
+wheel_file=$(ls $wheel_glob 2>/dev/null | head -1)
 if [ -z "$wheel_file" ]; then
     echo "Error: No wheel file found in dist/" >&2
     exit 1
@@ -343,16 +379,23 @@ if [ "$platform" = "Darwin" ]; then
     # delocate repairs the wheel and copies it to wheelhouse/.
     # With @loader_path rpaths, delocate can resolve inter-library
     # references.
+    #
+    # A missing libcudaqMLIR dependency is expected for cudaq-devel, as it
+    # is shipped in upstream cudaq.
+    delocate_extra=""
+    if $build_devel; then
+        delocate_extra="--ignore-missing-dependencies"
+    fi
     mkdir -p wheelhouse
     if $verbose; then
-        echo "  Command: delocate-wheel -v -w wheelhouse $wheel_file"
-        delocate-wheel -v -w wheelhouse "$wheel_file"
+        echo "  Command: delocate-wheel -v -e libgmp -e libmpfr $delocate_extra -w wheelhouse $wheel_file"
+        delocate-wheel -v -e libgmp -e libmpfr $delocate_extra -w wheelhouse "$wheel_file"
     else
-        delocate-wheel -w wheelhouse "$wheel_file"
+        delocate-wheel -e libgmp -e libmpfr $delocate_extra -w wheelhouse "$wheel_file"
     fi
 
     # Move repaired wheel to output
-    repaired_wheel=$(ls wheelhouse/cuda_quantum*.whl 2>/dev/null | head -1)
+    repaired_wheel=$(ls wheelhouse/cudaq_devel*.whl wheelhouse/cuda_quantum*.whl 2>/dev/null | head -1)
     if [ -n "$repaired_wheel" ]; then
         mv "$repaired_wheel" "$output_dir/"
         echo "Repaired wheel: $output_dir/$(basename "$repaired_wheel")"
@@ -394,6 +437,14 @@ else
     auditwheel_args="$auditwheel_args --exclude libcudart.so.$cudart_libsuffix"
     auditwheel_args="$auditwheel_args --exclude libnvidia-ml.so.1"
     auditwheel_args="$auditwheel_args --exclude libcuda.so.1"
+    auditwheel_args="$auditwheel_args --exclude libgmp.so.10"
+    auditwheel_args="$auditwheel_args --exclude libmpfr.so.6"
+
+    # A missing libcudaqMLIR dependency is expected for cudaq-devel, as it
+    # is shipped in upstream cudaq.
+    if $build_devel; then
+        auditwheel_args="$auditwheel_args --exclude libcudaqMLIR.so"
+    fi
 
     if $verbose; then
         echo "  Command: auditwheel $auditwheel_args"
@@ -404,6 +455,13 @@ else
 
     # Move repaired wheel to output
     repaired_wheel=$(ls "${auditwheel_tmp:?}"/*manylinux*.whl 2>/dev/null | head -1)
+    if [ "$(uname -m)" = "x86_64" ] && [ -n "$repaired_wheel" ]; then
+        if ! unzip -l "$repaired_wheel" 2>/dev/null | grep -q 'libqrmi'; then
+            echo "WARNING: libqrmi.so not bundled in x86_64 wheel"
+        else
+            echo "Verified libqrmi.so is bundled in x86_64 wheel"
+        fi
+    fi
     if [ -n "$repaired_wheel" ]; then
         mv "$repaired_wheel" "$output_dir/"
         echo "Repaired wheel: $output_dir/$(basename "$repaired_wheel")"

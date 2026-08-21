@@ -16,11 +16,9 @@ import cudaq
 from cudaq import spin
 import numpy as np
 
-try:
-    from utils.mock_qpu.oqc import startServer
-except:
-    print("Mock qpu not available, skipping OQC tests.")
-    pytest.skip("Mock qpu not available.", allow_module_level=True)
+from utils.mock_qpu.oqc import startServer
+
+pytestmark = pytest.mark.xdist_group("oqc_mock")
 
 # Define the port for the mock server
 port = 62442
@@ -32,6 +30,8 @@ def assert_close(got) -> bool:
 
 @pytest.fixture(scope="session", autouse=True)
 def startUpMockServer():
+
+    cudaq.set_random_seed(13)
 
     os.environ["OQC_AUTH_TOKEN"] = "fake_auth_token"
     os.environ["OQC_DEVICE"] = "qpu:uk:-1:1234567890"
@@ -164,6 +164,31 @@ def test_OQC_observe():
     futureReadIn = cudaq.AsyncObserveResult(futureAsString, hamiltonian)
     res = futureReadIn.get()
     assert assert_close(res.expectation())
+
+
+def test_OQC_observe_broadcast():
+    qubit_count = 5
+    sample_count = 4
+    shots_count = 10000
+    parameters = np.random.default_rng(13).uniform(low=0,
+                                                   high=1,
+                                                   size=(sample_count,
+                                                         qubit_count))
+
+    @cudaq.kernel
+    def kernel(qubit_count: int, parameters: List[float]):
+        qvector = cudaq.qvector(qubit_count)
+        for i in range(qubit_count - 1):
+            rx(parameters[i], qvector[i])
+
+    results = cudaq.observe(kernel,
+                            spin.z(0), [qubit_count] * sample_count,
+                            parameters,
+                            shots_count=shots_count)
+    expected = np.cos(parameters[:, 0])
+
+    assert len(results) == sample_count
+    assert np.allclose([r.expectation() for r in results], expected, atol=0.1)
 
 
 def test_OQC_state_synthesis():
@@ -324,7 +349,10 @@ def test_2q_unitary_synthesis():
         x(controls)
 
     counts = cudaq.sample(ctrl_z_kernel)
-    assert counts["0010011"] == 1000
+    # The 5th qubit in `qubits` is not referenced and may be deleted
+    assert ("0010011" in counts and
+            counts["0010011"] == 1000) or ("001011" in counts and
+                                           counts["001011"] == 1000)
 
 
 def test_explicit_measurement():

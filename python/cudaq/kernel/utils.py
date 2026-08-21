@@ -21,10 +21,10 @@ from cudaq.mlir.execution_engine import ExecutionEngine
 from cudaq.mlir.dialects import func
 from cudaq.mlir._mlir_libs._quakeDialects import cudaq_runtime
 from cudaq.mlir.dialects import quake, cc
-from cudaq.mlir.ir import (ComplexType, F32Type, F64Type, IntegerType, Context,
-                           Module)
+from cudaq.mlir.ir import (ComplexType, F32Type, F64Type, FunctionType,
+                           IntegerType, Context, Module)
 from cudaq.mlir._mlir_libs._quakeDialects import register_all_dialects
-from cudaq.kernel_types import qubit, qvector, qview
+from cudaq.kernel_types import measure_handle, qubit, qvector, qview
 
 State = cudaq_runtime.State
 pauli_word = cudaq_runtime.pauli_word
@@ -39,6 +39,35 @@ globalRegisteredOperations = {}
 
 # Keep a global registry of any custom data types
 globalRegisteredTypes = cudaq_runtime.DataClassRegistry
+
+boundaryDiagnostic = (
+    "measurement handle cannot cross the host-device boundary; "
+    "entry-point kernels must discriminate first")
+
+
+def containsMeasureHandle(ty, _seen=None):
+    """Return True iff ``ty`` is ``!cc.measure_handle`` or transitively
+    contains one. The walk stops at callable / function-type boundaries: a
+    callable parameter's signature is a device-side type contract for the
+    body of the callable, not a slot for a handle value.
+    """
+    if _seen is None:
+        _seen = set()
+    if ty is None or id(ty) in _seen:
+        return False
+    _seen.add(id(ty))
+    if cc.MeasureHandleType.isinstance(ty):
+        return True
+    if cc.PointerType.isinstance(ty):
+        return containsMeasureHandle(cc.PointerType.getElementType(ty), _seen)
+    if cc.ArrayType.isinstance(ty):
+        return containsMeasureHandle(cc.ArrayType.getElementType(ty), _seen)
+    if cc.SequenceType.isinstance(ty):
+        return containsMeasureHandle(cc.SequenceType.getElementType(ty), _seen)
+    if cc.StructType.isinstance(ty):
+        return any(
+            containsMeasureHandle(t, _seen) for t in cc.StructType.getTypes(ty))
+    return False
 
 
 def getMLIRContext():
@@ -89,7 +118,7 @@ class Color:
 
 # Name of module attribute to recover the name of the entry-point for the python
 # kernel decorator.  The associated StringAttr is *without* the `nvqppPrefix`.
-cudaq__unique_attr_name = "cc.python_uniqued"
+cudaq__unique_attr_name = "quake.python_uniqued"
 
 
 def recover_func_op(module, name):
@@ -100,40 +129,14 @@ def recover_func_op(module, name):
     return None
 
 
-def recover_calling_module():
-
-    def frame_and_mod(fr):
-        if fr is None:
-            return None
-        mod = inspect.getmodule(fr)
-        if mod is not None and getattr(mod, "__name__", None):
-            return mod.__name__
-        # Fallback for notebooks to search module in `globals`
-        return fr.f_globals.get("__name__")
-
-    frame = inspect.currentframe()
-    try:
-        frame = frame.f_back
-        name = frame_and_mod(frame)
-
-        while frame is not None and name is not None and (
-                name.startswith("cudaq.kernel") or
-                name.startswith("cudaq.runtime")):
-            frame = frame.f_back
-            name = frame_and_mod(frame)
-
-        if frame is None:
-            return None
-
-        # A real module object if available
-        mod = inspect.getmodule(frame)
-        if mod is not None:
-            return mod
-
-        # Resolve by `globals` name
-        return sys.modules.get(frame.f_globals.get("__name__"))
-    finally:
-        del frame
+def get_module_name(fr):
+    if fr is None:
+        return None
+    mod = inspect.getmodule(fr)
+    if mod is not None and getattr(mod, "__name__", None):
+        return mod.__name__
+    # Fallback for notebooks to search module in `globals`
+    return fr.f_globals.get("__name__")
 
 
 def resolve_qualified_symbol(y):
@@ -175,7 +178,7 @@ def resolve_qualified_symbol(y):
     return None
 
 
-def recover_value_of_or_none(name, resMod):
+def recover_value_of_or_none(name, frame=None):
     """
     Recover the Python value of the symbol `name` from the enclosing context.
     The enclosing context is the context in which the `PyKernelDecorator`
@@ -184,59 +187,92 @@ def recover_value_of_or_none(name, resMod):
     If `name` is qualified, then lookup the symbol in the module that is
     specified in the name itself.
 
-    If there is a resolve-in module, `resMod`, then resolve the symbol in the
-    given module.
+    If there is a resolve-in frame, `frame`, then resolve the symbol in the
+    given frame.
 
-    Otherwise, the symbol is neither qualified nor is there another module to
-    resolve the name in.  So perform a normal LEGB resolution of the symbol in
-    the current set of stack frames. (Actually, EGB since the symbol cannot be
-    local.)
-
-    Note that this need not be used with a `PyKernel` object as the semantics of
-    the kernel builder presumes immediate lookup and resolution of all symbols
-    during construction.
+    Otherwise, perform a normal LEGB resolution (actually, EGB since the symbol
+    cannot be local.) of the symbol. If `frame` is provided, resolve the symbol
+    in the given frame. Otherwise, resolve it in the current set of stack
+    frames. 
     """
-    from .kernel_decorator import isa_kernel_decorator
-
     if '.' in name:
         return resolve_qualified_symbol(name)
 
-    if resMod:
-        return resMod.__dict__.get(name, None)
+    try:
+        if frame is None:
+            frame = inspect.currentframe()
+            # Walk back until we leave the cudaq.kernel module
+            while frame is not None and get_module_name(frame).startswith(
+                    "cudaq.kernel"):
+                frame = frame.f_back
 
-    def drop_front():
-        drop = 0
-        for frameinfo in inspect.stack():
-            frame = frameinfo.frame
-            if 'self' in frame.f_locals:
-                if isa_kernel_decorator(frame.f_locals['self']):
-                    return drop
-            drop = drop + 1
-        return drop
+        while frame is not None:
+            if name in frame.f_locals:
+                return frame.f_locals[name]
+            if name in frame.f_globals:
+                return frame.f_globals[name]
+            frame = frame.f_back
+        return None
+    finally:
+        del frame
 
-    drop = drop_front()
-    for frameinfo in inspect.stack()[drop:]:
-        frame = frameinfo.frame
-        if name in frame.f_locals:
-            return frame.f_locals[name]
-        if name in frame.f_globals:
-            return frame.f_globals[name]
-    return None
+
+def _annotations_of_namespace(namespace):
+    annotations = namespace.get('__annotations__')
+    if annotations is not None:
+        return annotations
+    # Python 3.14 (PEP 649) evaluates annotations lazily: the namespace holds
+    # an `__annotate__` function and `__annotations__` only appears in the
+    # dict once accessed as a module/class attribute.
+    annotate = namespace.get('__annotate__')
+    if annotate is None:
+        return {}
+    try:
+        return annotate(1)  # 1 = `annotationlib.Format.VALUE`
+    except Exception:
+        return {}
+
+
+def recover_annotation_of_or_none(name, frame=None):
+    """
+    Recover the type annotation of the symbol `name` from the enclosing
+    context, mirroring the frame walk of `recover_value_of_or_none`. Only
+    annotations stored in a `namespace's` `__annotations__` (e.g. a module-level
+    `name: list[float] = []`) are recoverable.
+    """
+    if '.' in name:
+        return None
+
+    try:
+        if frame is None:
+            frame = inspect.currentframe()
+            while frame is not None and get_module_name(frame).startswith(
+                    "cudaq.kernel"):
+                frame = frame.f_back
+
+        while frame is not None:
+            for namespace in (frame.f_locals, frame.f_globals):
+                if name in namespace:
+                    annotation = _annotations_of_namespace(namespace).get(name)
+                    if isinstance(annotation, str):
+                        try:
+                            annotation = eval(annotation, frame.f_globals,
+                                              frame.f_locals)
+                        except Exception:
+                            return None
+                    return annotation
+            frame = frame.f_back
+        return None
+    finally:
+        del frame
 
 
 def is_recovered_value_ok(result):
-    try:
-        if result != None:
-            return True
-    except ValueError:
-        # `nd.array` values raise `ValueError` with the above `if result` but
-        # are otherwise legit here.
-        return True
-    return False
+    return result is not None
 
 
-def recover_value_of(name, resMod):
-    result = recover_value_of_or_none(name, resMod)
+def recover_value_of(name, frame=None):
+    result = recover_value_of_or_none(name, frame)
     if is_recovered_value_ok(result):
         return result
     raise RuntimeError("'" + name + "' is not available in this scope.")
@@ -301,6 +337,64 @@ def emitWarning(msg):
                    Color.END + '\n\nOffending code:\n' + offendingSrc[0])
 
 
+def _format_missing_source_error(function, filename):
+    """
+    Build a user-facing diagnostic explaining why source for `function` could
+    not be retrieved. Distinguishes between three buckets:
+      - Interactive interpreter-defined (`<stdin>` or `<python-input-...>`).
+      - Other synthetic filenames (code compiled with a non-file name).
+      - Real paths that failed to read (missing file, frozen module,
+        compiled extension).
+    """
+    qualname = getattr(function, '__qualname__',
+                       getattr(function, '__name__', '<unknown>'))
+    if filename is None:
+        return (f"@cudaq.kernel could not determine a source location for "
+                f"function `{qualname}`. `@cudaq.kernel` requires source that "
+                f"Python's `inspect` module can recover. Move the kernel into "
+                f"a `.py` module.")
+    is_repl = filename == '<stdin>' or filename.startswith('<python-input')
+    is_synthetic = filename.startswith('<') and filename.endswith('>')
+    if is_repl:
+        return (f"@cudaq.kernel could not retrieve source for function "
+                f"`{qualname}` because it is defined in the Python REPL, "
+                f"which does not preserve source code that `inspect` can "
+                f"recover. To use `@cudaq.kernel`, either run from a "
+                f"Jupyter/IPython session (which preserves source via "
+                f"`linecache`) or move the kernel into a `.py` module.")
+    if is_synthetic:
+        return (f"@cudaq.kernel could not retrieve source for function "
+                f"`{qualname}`: it is defined in a non-file context "
+                f"(`{filename}`). `@cudaq.kernel` requires source that "
+                f"`inspect` can recover. Move the kernel into a `.py` "
+                f"module.")
+    return (f"@cudaq.kernel could not read source for function "
+            f"`{qualname}` at `{filename}` (the file may be missing, "
+            f"frozen, or a compiled extension).")
+
+
+def get_function_source_or_raise(function):
+    """
+    Return `(dedented_source, (filename, first_lineno))` for `function`.
+    Wraps `inspect.getfile`, `inspect.getsourcelines`, and
+    `inspect.getsource`. If any fail (most commonly because `function` was
+    defined in the interactive Python interpreter), raise `RuntimeError`
+    with a diagnostic
+    tailored to the failure mode, chained from the underlying exception.
+    """
+    filename = None
+    try:
+        filename = inspect.getfile(function)
+        first_line = inspect.getsourcelines(function)[1]
+        src = inspect.getsource(function)
+    except OSError as e:
+        raise RuntimeError(_format_missing_source_error(function,
+                                                        filename)) from e
+    leadingSpaces = len(src) - len(src.lstrip())
+    src = '\n'.join([line[leadingSpaces:] for line in src.split('\n')])
+    return src, (filename, first_line)
+
+
 def mlirTryCreateStructType(mlirEleTypes, name=None, context=None):
     """
     Creates either a `quake.StruqType` or a `cc.StructType` used to represent 
@@ -326,12 +420,16 @@ def mlirTryCreateStructType(mlirEleTypes, name=None, context=None):
     return quake.StruqType.getNamed(name, mlirEleTypes, context=context)
 
 
-def mlirTypeFromAnnotation(annotation, ctx, raiseError=False):
+def mlirTypeFromAnnotation(annotation,
+                           ctx,
+                           raiseError=False,
+                           cudaqAliases=None):
     """
     Return the MLIR Type corresponding to the given kernel function argument
     type annotation.  Throws an exception if the programmer did not annotate
     function argument types.
     """
+    _cudaq_names = cudaqAliases if cudaqAliases else {'cudaq'}
 
     localEmitFatalError = emitFatalError
     if raiseError:
@@ -348,7 +446,7 @@ def mlirTypeFromAnnotation(annotation, ctx, raiseError=False):
     with ctx:
 
         if hasattr(annotation, 'attr') and hasattr(annotation.value, 'id'):
-            if annotation.value.id == 'cudaq':
+            if annotation.value.id in _cudaq_names:
                 if annotation.attr in ['qview', 'qvector']:
                     return quake.VeqType.get()
                 if annotation.attr in ['State']:
@@ -357,10 +455,12 @@ def mlirTypeFromAnnotation(annotation, ctx, raiseError=False):
                     return quake.RefType.get()
                 if annotation.attr == 'pauli_word':
                     return cc.CharspanType.get()
+                if annotation.attr == 'measure_handle':
+                    return cc.MeasureHandleType.get()
 
             if annotation.value.id in ['numpy', 'np']:
                 if annotation.attr in ['array', 'ndarray']:
-                    return cc.StdvecType.get(F64Type.get())
+                    return cc.SequenceType.get(F64Type.get())
                 if annotation.attr == 'complex128':
                     return ComplexType.get(F64Type.get())
                 if annotation.attr == 'complex64':
@@ -400,7 +500,13 @@ def mlirTypeFromAnnotation(annotation, ctx, raiseError=False):
                     f"Unable to get list elements when inferring type from annotation ("
                     f"{ast.unparse(annotation) if hasattr(ast, 'unparse') else annotation})."
                 )
-            argTypes = [mlirTypeFromAnnotation(a, ctx) for a in args.elts]
+            argTypes = [
+                mlirTypeFromAnnotation(a,
+                                       ctx,
+                                       raiseError=raiseError,
+                                       cudaqAliases=cudaqAliases)
+                for a in args.elts
+            ]
             if not isinstance(ret, ast.Constant) or ret.value:
                 localEmitFatalError("passing kernels as arguments that return"
                                     " a value is not currently supported")
@@ -417,8 +523,11 @@ def mlirTypeFromAnnotation(annotation, ctx, raiseError=False):
 
             eleTypeNode = annotation.slice
             # expected that slice is a Name node
-            listEleTy = mlirTypeFromAnnotation(eleTypeNode, ctx)
-            return cc.StdvecType.get(listEleTy)
+            listEleTy = mlirTypeFromAnnotation(eleTypeNode,
+                                               ctx,
+                                               raiseError=raiseError,
+                                               cudaqAliases=cudaqAliases)
+            return cc.SequenceType.get(listEleTy)
 
         if isinstance(annotation,
                       ast.Subscript) and (annotation.value.id == 'tuple' or
@@ -440,7 +549,13 @@ def mlirTypeFromAnnotation(annotation, ctx, raiseError=False):
                     f"annotation ({ast.unparse(annotation) if hasattr(ast, 'unparse') else annotation})."
                 )
 
-            eleTypes = [mlirTypeFromAnnotation(v, ctx) for v in elements]
+            eleTypes = [
+                mlirTypeFromAnnotation(v,
+                                       ctx,
+                                       raiseError=raiseError,
+                                       cudaqAliases=cudaqAliases)
+                for v in elements
+            ]
             tupleTy = mlirTryCreateStructType(eleTypes)
             if tupleTy is None:
                 localEmitFatalError("Hybrid quantum-classical data types and "
@@ -582,38 +697,48 @@ def mlirTypeFromPyType(argType, ctx, **kwargs):
         pyEleTy = get_args(argType)
         if len(pyEleTy) == 1:
             eleTy = mlirTypeFromPyType(pyEleTy[0], ctx)
-            return cc.StdvecType.get(eleTy, ctx)
+            return cc.SequenceType.get(eleTy, ctx)
         argType = list
 
     if argType in [list, np.ndarray, List]:
         if 'argInstance' not in kwargs:
-            return cc.StdvecType.get(mlirTypeFromPyType(float, ctx), ctx)
+            return cc.SequenceType.get(mlirTypeFromPyType(float, ctx), ctx)
         if argType != np.ndarray:
             if kwargs['argInstance'] == None:
-                return cc.StdvecType.get(mlirTypeFromPyType(float, ctx), ctx)
+                return cc.SequenceType.get(mlirTypeFromPyType(float, ctx), ctx)
 
         argInstance = kwargs['argInstance']
         argTypeToCompareTo = kwargs[
             'argTypeToCompareTo'] if 'argTypeToCompareTo' in kwargs else None
 
         if len(argInstance) == 0:
+            if isinstance(argInstance, np.ndarray):
+                eleTy = mlirTypeFromPyType(argInstance.dtype.type, ctx)
+                for _ in range(argInstance.ndim - 1):
+                    eleTy = cc.SequenceType.get(eleTy, ctx)
+                return cc.SequenceType.get(eleTy, ctx)
+
             if argTypeToCompareTo == None:
                 emitFatalError('Cannot infer runtime argument type')
 
-            eleTy = cc.StdvecType.getElementType(argTypeToCompareTo)
-            return cc.StdvecType.get(eleTy, ctx)
+            eleTy = cc.SequenceType.getElementType(argTypeToCompareTo)
+            return cc.SequenceType.get(eleTy, ctx)
 
         if isinstance(argInstance[0], list):
-            return cc.StdvecType.get(
+            return cc.SequenceType.get(
                 mlirTypeFromPyType(
                     type(argInstance[0]),
                     ctx,
                     argInstance=argInstance[0],
-                    argTypeToCompareTo=cc.StdvecType.getElementType(
-                        argTypeToCompareTo)), ctx)
+                    argTypeToCompareTo=(
+                        cc.SequenceType.getElementType(argTypeToCompareTo)
+                        if argTypeToCompareTo is not None else None)), ctx)
 
-        return cc.StdvecType.get(mlirTypeFromPyType(type(argInstance[0]), ctx),
-                                 ctx)
+        if isinstance(argInstance[0], str):
+            return cc.SequenceType.get(cc.CharspanType.get(ctx), ctx)
+
+        return cc.SequenceType.get(
+            mlirTypeFromPyType(type(argInstance[0]), ctx), ctx)
 
     if get_origin(argType) == tuple:
         eleTypes = []
@@ -649,6 +774,8 @@ def mlirTypeFromPyType(argType, ctx, **kwargs):
         return quake.RefType.get(ctx)
     if argType == pauli_word:
         return cc.CharspanType.get(ctx)
+    if argType == measure_handle:
+        return cc.MeasureHandleType.get(ctx)
 
     if 'argInstance' in kwargs:
         argInstance = kwargs['argInstance']
@@ -682,9 +809,9 @@ def mlirTypeFromPyType(argType, ctx, **kwargs):
 
     if 'argInstance' not in kwargs:
         if argType == list[int]:
-            return cc.StdvecType.get(mlirTypeFromPyType(int, ctx), ctx)
+            return cc.SequenceType.get(mlirTypeFromPyType(int, ctx), ctx)
         if argType == list[float]:
-            return cc.StdvecType.get(mlirTypeFromPyType(float, ctx), ctx)
+            return cc.SequenceType.get(mlirTypeFromPyType(float, ctx), ctx)
 
     emitFatalError(
         f"Cannot handle conversion of python type {argType} to MLIR type.")
@@ -728,8 +855,11 @@ def mlirTypeToPyType(argType):
     if cc.CharspanType.isinstance(argType):
         return pauli_word
 
-    if cc.StdvecType.isinstance(argType):
-        eleTy = cc.StdvecType.getElementType(argType)
+    if cc.MeasureHandleType.isinstance(argType):
+        return measure_handle
+
+    if cc.SequenceType.isinstance(argType):
+        eleTy = cc.SequenceType.getElementType(argType)
         if cc.CharspanType.isinstance(eleTy):
             return list[pauli_word]
 

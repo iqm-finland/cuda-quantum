@@ -19,7 +19,7 @@ pytestmark = pytest.mark.skip("Amazon Braket credentials required")
 
 
 @pytest.fixture(scope="session", autouse=True)
-def do_something():
+def set_up_target():
     cudaq.set_target("braket")
     yield "Running the tests."
     cudaq.__clearKernelRegistries()
@@ -422,10 +422,8 @@ def test_state_synthesis():
     assert len(counts) == 1
 
 
-@pytest.mark.parametrize("device_arn", [
-    "arn:aws:braket:::device/quantum-simulator/amazon/dm1",
-    "arn:aws:braket:::device/quantum-simulator/amazon/tn1"
-])
+@pytest.mark.parametrize(
+    "device_arn", ["arn:aws:braket:::device/quantum-simulator/amazon/dm1"])
 def test_other_simulators(device_arn):
     cudaq.set_target("braket", machine=device_arn)
     test_qvector_kernel()

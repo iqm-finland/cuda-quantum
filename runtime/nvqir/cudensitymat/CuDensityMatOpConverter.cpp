@@ -173,8 +173,7 @@ cudaq::dynamics::CuDensityMatOpConverter::createElementaryOperator(
 
   const bool isBatched = elemOps.size() > 1 && !allSame;
   // We should have validated the batching compatibility.
-  assert(!isBatched ||
-         cudaq::__internal__::checkBatchingCompatibility(elemOps));
+  assert(!isBatched || cudaq::detail::checkBatchingCompatibility(elemOps));
 
   auto subspaceExtents = getSubspaceExtents(modeExtents, elemOps[0].degrees());
   cudaq::dimension_map dimensions = convertDimensions(modeExtents);
@@ -249,7 +248,7 @@ cudaq::dynamics::CuDensityMatOpConverter::createElementaryOperator(
         if (diags.empty())
           return false;
         const auto dim = std::accumulate(
-            subspaceExtents.begin(), subspaceExtents.end(), 1,
+            subspaceExtents.begin(), subspaceExtents.end(), int64_t{1},
             std::multiplies<decltype(subspaceExtents)::value_type>());
         if (dim < m_minDimensionDiag)
           return false;
@@ -271,8 +270,8 @@ cudaq::dynamics::CuDensityMatOpConverter::createElementaryOperator(
     }
 
     const int64_t totalDim =
-        std::accumulate(subspaceExtents.begin(), subspaceExtents.end(), 1,
-                        std::multiplies<int64_t>());
+        std::accumulate(subspaceExtents.begin(), subspaceExtents.end(),
+                        int64_t{1}, std::multiplies<int64_t>());
     std::vector<std::complex<double>> tensorData;
     tensorData.reserve(totalDim * totalDim * batchSize);
     for (const auto &elementaryOp : elemOps) {
@@ -362,10 +361,6 @@ cudaq::dynamics::CuDensityMatOpConverter::createProductOperatorTerm(
     for (size_t j = 0; j < sub_degrees.size(); j++) {
       std::size_t degree = sub_degrees[j];
       int modality = modalities[j];
-
-      if (sub_degrees[i] < 0)
-        throw std::out_of_range("Degree cannot be negative!");
-
       allDegrees.emplace_back(degree);
       allModeActionDuality.emplace_back(modality);
     }

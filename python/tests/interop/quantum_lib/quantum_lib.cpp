@@ -8,8 +8,6 @@
 
 #include "quantum_lib.h"
 
-namespace py = pybind11;
-
 __qpu__ void
 cudaq::entryPoint(const std::function<void(cudaq::qvector<> &)> &statePrep) {
   cudaq::qvector q(2);
@@ -68,4 +66,60 @@ __qpu__ void cudaq::most_curious_test(
   // qern takes a quantum argument and a classical argument.
   cudaq::qvector qs(5);
   qern(qs, 4);
+}
+
+__qpu__ std::size_t cudaq::callback_test(
+    cudaq::qkernel<std::size_t(cudaq::qvector<> &, std::size_t)> &&qern) {
+  cudaq::qvector qs(5);
+  return qern(qs, 4);
+}
+
+// Returning with no args
+__qpu__ void cudaq::py_ret_test1(cudaq::qkernel<std::vector<float>()> &&qern) {
+  auto rots = qern();
+  cudaq::qvector qs(3);
+  rz(rots[0], qs[0]);
+  rz(rots[1], qs[1]);
+  rz(rots[2], qs[2]);
+  mz(qs);
+}
+
+// Returning with an arg
+__qpu__ void
+cudaq::py_ret_test2(cudaq::qkernel<std::vector<float>(std::size_t)> &&qern) {
+  auto rots = qern(3);
+  cudaq::qvector qs(3);
+  rz(rots[0], qs[0]);
+  rz(rots[1], qs[1]);
+  rz(rots[2], qs[2]);
+  mz(qs);
+}
+
+__qpu__ bool cudaq::measure_handle_lifetime_test(
+    cudaq::qkernel<void(cudaq::qvector<> &)> &&qern) {
+  cudaq::qvector retained(1), callbackQubits(1);
+  x(retained);
+  auto retainedResult = mz(retained[0]);
+
+  qern(callbackQubits);
+
+  // A nested callable shares the surrounding execution's result maps.
+  // Reading a handle created before that call must still produce |1>.
+  return retainedResult;
+}
+
+__qpu__ void cudaq::measure_handle_callback_test(
+    const cudaq::qkernel<std::vector<cudaq::measure_handle>(cudaq::qvector<> &)>
+        &qern) {
+  cudaq::qvector stable(1), random(1);
+  auto stableResult = qern(stable);
+
+  h(random);
+  auto randomResult = mz(random);
+
+  // The two random measurements cancel, leaving a detector on the stable
+  // measurement returned by the nested Python kernel.
+  std::vector<cudaq::measure_handle> support{stableResult[0], randomResult[0],
+                                             randomResult[0]};
+  cudaq::detector(support);
 }

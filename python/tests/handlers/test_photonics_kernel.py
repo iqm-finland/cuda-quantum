@@ -14,7 +14,7 @@ import cudaq
 
 
 @pytest.fixture(autouse=True)
-def do_something():
+def set_up_target():
     cudaq.set_target("orca-photonics")
     yield
     cudaq.__clearKernelRegistries()
@@ -38,6 +38,49 @@ def test_qudit():
     state = cudaq.get_state(kernel)
     state.dump()
     assert 4 == state.__len__()
+    # Flat-index access.
+    assert state[0] == 0.0
+    assert state[1] == 0.0
+    assert state[2] == 0.0
+    assert state[3] == 1.0
+    # state[4]: index equals state length.
+    with pytest.raises(IndexError):
+        state[4]
+    # state[INT_MAX]: index exceeds state length.
+    with pytest.raises(IndexError):
+        state[2147483647]
+    # Basis-state access.
+    assert state.amplitude([0]) == 0.0
+    assert state.amplitude([1]) == 0.0
+    assert state.amplitude([2]) == 0.0
+    assert state.amplitude([3]) == 1.0
+    # amplitude([4]): digit equals qudit level.
+    with pytest.raises(
+            IndexError,
+            match=r"\[photonics\] basis-state value is out of bounds\."):
+        state.amplitude([4])
+    # amplitude([-1]): negative qudit digit.
+    with pytest.raises(
+            IndexError,
+            match=r"\[photonics\] basis-state value is out of bounds\."):
+        state.amplitude([-1])
+
+
+def test_compilation_unsupported():
+
+    @cudaq.kernel
+    def kernel():
+        q = qudit(level=4)
+        create(q)
+
+    assert not kernel.supports_compilation()
+
+    with pytest.raises(RuntimeError) as e:
+        kernel.compile()
+
+    print(e.value)
+    assert "Cannot compile kernel 'kernel': target handler 'orca-photonics' does not support compilation" in str(
+        e.value)
 
 
 def test_qudit_list():
@@ -234,15 +277,18 @@ def test_qudit_level():
 
 def test_run_unsupported():
 
+    @cudaq.kernel
+    def kernel():
+        q = qudit(level=2)
+        create(q)
+        mz(q)
+
     with pytest.raises(RuntimeError) as e:
-
-        @cudaq.kernel
-        def kernel():
-            q = qudit(level=2)
-            create(q)
-            mz(q)
-
         cudaq.run(kernel, shots_count=10)
+    assert "Unsupported target" in repr(e)
+
+    with pytest.raises(RuntimeError) as e:
+        cudaq.observe(kernel, None)
     assert "Unsupported target" in repr(e)
 
 

@@ -22,6 +22,29 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  changes:
+    name: Check for stable CUDA-Q changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      stable: ${{ steps.filter.outputs.matched }}
+    steps:
+      - name: Checkout changed-path action
+        uses: actions/checkout@v6
+        with:
+          sparse-checkout: |
+            .github/actions/check-changed-paths
+            .github/research-preview-paths.txt
+          sparse-checkout-cone-mode: false
+
+      - name: Check changed paths
+        id: filter
+        uses: ./.github/actions/check-changed-paths
+        with:
+          paths-ignore-file: .github/research-preview-paths.txt
+
   # ==========================================================================
   # Job 1: Code Formatting (clang-format, yapf, markdownlint, file quality)
   # ==========================================================================
@@ -62,6 +85,8 @@ jobs:
   # ==========================================================================
   license_headers:
     name: Check license headers
+    needs: changes
+    if: needs.changes.outputs.stable == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -93,6 +118,8 @@ jobs:
   # ==========================================================================
   spelling:
     name: Check spelling
+    needs: changes
+    if: needs.changes.outputs.stable == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -110,30 +137,3 @@ jobs:
       - name: Run spell checks
         run: |
           pre-commit run spellcheck --all-files --hook-stage pre-push
-
-  # ==========================================================================
-  # Job 4: Link Validation
-  # ==========================================================================
-  links:
-    name: Check links
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-
-    steps:
-      - uses: actions/checkout@v6
-
-      - name: Setup pre-commit
-        id: setup
-        uses: ./.github/actions/setup-precommit
-        with:
-          cache-key-suffix: links
-          install-node: 'true'  # For markdown-link-check
-
-      - name: Run link checks
-        run: |
-          if [ "${{ steps.setup.outputs.mode }}" == "pr" ]; then
-            cat ${{ steps.setup.outputs.changed-files }} | grep '\.md$' || true | xargs -r pre-commit run markdown-link-check --hook-stage pre-push --files
-          else
-            pre-commit run markdown-link-check --all-files --hook-stage pre-push
-          fi

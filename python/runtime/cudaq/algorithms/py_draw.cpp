@@ -7,23 +7,23 @@
  ******************************************************************************/
 
 #include "py_draw.h"
+#include "runtime/cudaq/platform/py_alt_launch_kernel.h"
 #include "cudaq/algorithms/draw.h"
 #include "cudaq/platform/nvqpp_interface.h"
-#include "runtime/cudaq/platform/py_alt_launch_kernel.h"
-
-namespace py = pybind11;
+#include <nanobind/stl/shared_ptr.h>
 
 /// @brief Run `cudaq::contrib::draw`'s string overload on the provided kernel.
 /// \p kernel is a kernel decorator object and \p args are the arguments to
 /// launch \p kernel.
-static std::string pyDraw(const std::string &format,
-                          const std::string &shortName, MlirModule mod,
-                          MlirType retTy, py::args runtimeArgs) {
+static std::string
+pyDraw(const std::string &format, const std::string &shortName, MlirModule mod,
+       std::shared_ptr<cudaq::detail::CompiledModuleCache> cache,
+       nanobind::args runtimeArgs) {
   if (format != "ascii" && format != "latex")
     throw std::runtime_error("format argument must be \"ascii\" or \"latex\".");
 
   auto f = [=]() {
-    return cudaq::marshal_and_launch_module(shortName, mod, retTy, runtimeArgs);
+    return cudaq::marshal_and_launch_module(shortName, mod, runtimeArgs, cache);
   };
   if (format == "ascii")
     return cudaq::contrib::extractTrace(std::move(f));
@@ -31,12 +31,14 @@ static std::string pyDraw(const std::string &format,
 }
 
 /// @brief Bind the draw cudaq function
-void cudaq::bindPyDraw(py::module &mod) {
+void cudaq::bindPyDraw(nanobind::module_ &mod) {
   mod.def(
       "draw_impl",
       [](const std::string &format, const std::string &shortName,
-         MlirModule mod, MlirType retTy, py::args runtimeArgs) {
-        return pyDraw(format, shortName, mod, retTy, runtimeArgs);
+         MlirModule mod,
+         std::shared_ptr<cudaq::detail::CompiledModuleCache> cache,
+         nanobind::args runtimeArgs) {
+        return pyDraw(format, shortName, mod, std::move(cache), runtimeArgs);
       },
       R"#(
 Return a string representing the drawing of the execution path, in the format
@@ -47,7 +49,7 @@ string.
 Args:
   format (str): The format of the output. Can be 'ascii' or 'latex'.
   kernel (:class:`Kernel`): The :class:`Kernel` to draw.
-  *arguments (Optional[Any]): The concrete values to evaluate the kernel 
+  *arguments (Optional[Any]): The concrete values to evaluate the kernel
       function at. Leave empty if the kernel doesn't accept any arguments.
 
 Returns:
@@ -66,12 +68,12 @@ Returns:
       mz(q)
   print(cudaq.draw(bell_pair))
   # Output
-  #      ╭───╮     
+  #      ╭───╮
   # q0 : ┤ h ├──●──
   #      ╰───╯╭─┴─╮
   # q1 : ─────┤ x ├
   #           ╰───╯
-  
+
   # Example with arguments
   import cudaq
   @cudaq.kernel

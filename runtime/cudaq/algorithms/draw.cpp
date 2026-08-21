@@ -411,6 +411,10 @@ std::vector<Layer> layers_from_trace(const Trace &trace) {
 
   std::size_t ref = 0;
   for (const auto &inst : trace) {
+    const auto instruction_ref = ref++;
+    if (inst.type != cudaq::TraceInstructionType::Gate)
+      continue;
+
     std::vector<Diagram::Wire> wires = convertToIDs(inst.targets);
     const auto minmax_wires = std::minmax_element(begin(wires), end(wires));
     auto min_dwire = *minmax_wires.first;
@@ -432,22 +436,25 @@ std::vector<Layer> layers_from_trace(const Trace &trace) {
     if (static_cast<std::size_t>(layer) == layers.size()) {
       layers.emplace_back();
     }
-    layers.at(layer).emplace_back(ref);
+    layers.at(layer).emplace_back(instruction_ref);
     // advance wire layer
     for (auto i = min_dwire; i <= max_dwire; ++i)
       wire_layer.at(i) = layer;
-    ref += 1;
   }
   return layers;
 }
 
 std::vector<std::unique_ptr<Diagram::Operator>>
 boxes_from_trace(const Trace &trace) {
-  std::vector<std::unique_ptr<Diagram::Operator>> boxes;
-  boxes.reserve(std::distance(trace.begin(), trace.end()));
+  std::vector<std::unique_ptr<Diagram::Operator>> boxes(
+      trace.getNumInstructions());
 
-  // same iteration order as in layers_from_trace
+  std::size_t ref = 0;
   for (const auto &inst : trace) {
+    const auto instruction_ref = ref++;
+    if (inst.type != cudaq::TraceInstructionType::Gate)
+      continue;
+
     std::vector<Diagram::Wire> wires = convertToIDs(inst.targets);
     std::sort(wires.begin(), wires.end());
 
@@ -480,7 +487,7 @@ boxes_from_trace(const Trace &trace) {
       shape = std::make_unique<ControlledBox>(label, wires, inst.targets.size(),
                                               inst.controls.size());
     }
-    boxes.push_back(std::move(shape));
+    boxes.at(instruction_ref) = std::move(shape);
   }
   return boxes;
 }
@@ -491,15 +498,11 @@ std::string string_diagram_from_trace(const Trace &trace,
       boxes_from_trace(trace);
   std::vector<int> layer_width(layers.size(), 0);
   // set the width of the layers
-  for (size_t ref = 0; ref < boxes.size(); ++ref) {
-    // find the layer where the box is through ref
-    auto layer_it =
-        std::find_if(layers.begin(), layers.end(), [&ref](auto &layer) {
-          return std::find(layer.begin(), layer.end(), ref) != layer.end();
-        });
-    auto layer = std::distance(layers.begin(), layer_it);
-    layer_width.at(layer) =
-        std::max(layer_width.at(layer), boxes[ref]->width());
+  for (std::size_t layer = 0; layer < layers.size(); ++layer) {
+    for (const auto ref : layers.at(layer)) {
+      const auto &box = boxes.at(ref);
+      layer_width.at(layer) = std::max(layer_width.at(layer), box->width());
+    }
   }
 
   Diagram diagram(trace.getNumQudits());
@@ -534,7 +537,8 @@ std::string string_diagram_from_trace(const Trace &trace,
 
   // Draw boxes
   for (auto const &box : boxes) {
-    box->draw(diagram);
+    if (box)
+      box->draw(diagram);
   }
 
   std::string str;
@@ -602,10 +606,11 @@ std::string latex_diagram_from_trace(const Trace &trace,
   for (std::size_t row = 0; row < trace.getNumQudits(); ++row) {
     latex_lines[row] += fmt::format("  \\lstick{{$q_{}$}}", row) + sep;
   }
+
   for (const auto &layer : layers) {
     // unpack this layer
     for (const auto &ref : layer) {
-      auto instruction = trace.begin() + ref;
+      const auto instruction = trace.begin() + ref;
       auto name = get_latex_name(*instruction);
       // (controlled) swap
       if (name == "SWAP") {
@@ -666,12 +671,12 @@ std::string latex_diagram_from_trace(const Trace &trace,
 
 } // namespace
 
-std::string cudaq::__internal__::getLaTeXString(const Trace &trace) {
+std::string cudaq::detail::getLaTeXString(const Trace &trace) {
   const auto layers = layers_from_trace(trace);
   return latex_diagram_from_trace(trace, layers);
 }
 
-std::string cudaq::__internal__::draw(const Trace &trace) {
+std::string cudaq::detail::draw(const Trace &trace) {
   if (trace.begin() == trace.end()) {
     return "";
   }

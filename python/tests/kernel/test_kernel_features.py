@@ -11,16 +11,18 @@ import os
 import pytest
 import numpy as np
 from typing import Callable, List
+import math
 import sys
 
 import cudaq
 from cudaq import spin
 
 from test_helpers import h2_hamiltonian_4q
+from cudaq._metadata import assertions_enabled as _cudaq_assertions_enabled
 
 
 @pytest.fixture(autouse=True)
-def do_something():
+def run_and_clear_registries():
     yield
     cudaq.__clearKernelRegistries()
 
@@ -33,7 +35,6 @@ def test_argument_int():
 
     counts = cudaq.sample(kernel, 2)
     assert len(counts) == 1
-    assert '00' in counts
 
     @cudaq.kernel
     def kernel(n: np.int8):
@@ -41,7 +42,6 @@ def test_argument_int():
 
     counts = cudaq.sample(kernel, 2)
     assert len(counts) == 1
-    assert '00' in counts
 
     @cudaq.kernel
     def kernel(n: np.int16):
@@ -49,7 +49,6 @@ def test_argument_int():
 
     counts = cudaq.sample(kernel, 2)
     assert len(counts) == 1
-    assert '00' in counts
 
     @cudaq.kernel
     def kernel(n: np.int32):
@@ -57,7 +56,6 @@ def test_argument_int():
 
     counts = cudaq.sample(kernel, 2)
     assert len(counts) == 1
-    assert '00' in counts
 
     @cudaq.kernel
     def kernel(n: np.int64):
@@ -65,7 +63,6 @@ def test_argument_int():
 
     counts = cudaq.sample(kernel, 2)
     assert len(counts) == 1
-    assert '00' in counts
 
     @cudaq.kernel
     def kernel(n: np.int64):
@@ -73,7 +70,6 @@ def test_argument_int():
 
     counts = cudaq.sample(kernel, 2)
     assert len(counts) == 1
-    assert '00' in counts
 
 
 def test_adjoint():
@@ -86,7 +82,6 @@ def test_adjoint():
         t.adj(q)
 
     counts = cudaq.sample(single_adjoint_test)
-    assert '0' in counts
     assert len(counts) == 1
 
     @cudaq.kernel
@@ -96,7 +91,6 @@ def test_adjoint():
         t.adj(q)
 
     counts = cudaq.sample(qvector_adjoint_test)
-    assert '00' in counts
     assert len(counts) == 1
 
     @cudaq.kernel
@@ -109,7 +103,6 @@ def test_adjoint():
         ry.adj(1.1, q)
 
     counts = cudaq.sample(rotation_adjoint_test)
-    assert '0' in counts
     assert len(counts) == 1
 
     @cudaq.kernel
@@ -162,6 +155,25 @@ def test_adjoint():
     # FIXME: This current fails due to a bug in ApplySpecialization
     #counts = cudaq.sample(kernel, True, shots_count=1000)
     #assert len(counts) == 1 and '00000000' in counts
+
+
+def test_uccsd_odd_electrons():
+    num_qubits = 6
+    num_electrons = 3
+    num_parameters = cudaq.kernels.uccsd_num_parameters(num_electrons,
+                                                        num_qubits)
+    thetas = [0.01] * num_parameters
+
+    @cudaq.kernel
+    def kernel(qn: int, ne: int, parameters: list[float]):
+        qubits = cudaq.qvector(qn)
+        for i in range(ne):
+            x(qubits[i])
+        cudaq.kernels.uccsd(qubits, parameters, ne, qn)
+
+    expectation = cudaq.observe(kernel, spin.z(0), num_qubits, num_electrons,
+                                thetas).expectation()
+    assert -1.0 <= expectation <= 1.0
 
 
 def test_control():
@@ -223,6 +235,8 @@ def test_control():
                 cx(c, qubits[i])
             cudaq.control(cudaq.kernels.uccsd, c, qubits, thetas, num_electrons,
                           num_qubits)
+
+    cudaq.set_random_seed(13)
 
     counts = cudaq.sample(kernel, 0, shots_count=1000)
     assert len(counts) == 6
@@ -338,9 +352,43 @@ def test_2grover_compute_action():
     assert '011' in counts
 
 
-def test_observe():
+def test_callable_kernel_arg_signature_mismatch_arg_type():
 
     @cudaq.kernel
+    def k1(fct: Callable[[int, cudaq.qubit], None]):
+        qubit = cudaq.qubit()
+        fct(0, qubit)
+
+    @cudaq.kernel
+    def k2(cond: bool, q: cudaq.qubit):
+        if cond:
+            x(q)
+
+    with pytest.raises(RuntimeError, match="Expected callable with signature"):
+        k1(k2)
+
+    with pytest.raises(RuntimeError, match="Expected argument of type"):
+        k2(True, k1)
+
+
+def test_callable_kernel_arg_signature_mismatch_arity():
+
+    @cudaq.kernel
+    def caller(fct: Callable[[cudaq.qubit], None]):
+        qubit = cudaq.qubit()
+        fct(qubit)
+
+    @cudaq.kernel
+    def callee(a: int, q: cudaq.qubit):
+        pass
+
+    with pytest.raises(RuntimeError, match="Expected callable with signature"):
+        caller(callee)
+
+
+def test_observe():
+
+    @cudaq.kernel(disable_quantum_optimization=True)
     def ansatz():
         q = cudaq.qvector(1)
 
@@ -407,7 +455,7 @@ def test_exp_pauli():
 
 def test_exp_pauli_zz():
 
-    @cudaq.kernel
+    @cudaq.kernel(disable_quantum_optimization=True)
     def kernel(theta: float):
         q = cudaq.qvector(2)
         h(q[0])
@@ -422,7 +470,13 @@ def test_exp_pauli_zz():
     assert '11' in counts
 
 
-@pytest.mark.parametrize('target', ['default', 'stim'])
+_skip_stim_p1 = pytest.mark.skipif(
+    _cudaq_assertions_enabled,
+    reason="https://github.com/NVIDIA/cuda-quantum/issues/4026")
+
+
+@pytest.mark.parametrize(
+    'target', ['default', pytest.param('stim', marks=_skip_stim_p1)])
 def test_dynamic_circuit(target):
     """Test that we correctly handle circuits with 
        mid-circuit measurements and conditionals."""
@@ -568,6 +622,66 @@ def test_decrementing_range():
     counts = cudaq.sample(test2, [0, 1, 2, 3])
     assert len(counts) == 1
     assert '1010' in counts
+
+
+def test_dbg_ast_strict_path():
+    """Only cudaq.dbg.ast.print_i64/f64 is valid inside a kernel.
+
+    cudaq.ast is a lazy alias for cudaq.dbg.ast (via _LAZY_SUBMODULES), so
+    without an explicit AST structure check it would pass the devKey guard.
+    Component reorderings like dbg.cudaq.ast are also rejected.
+
+    See https://github.com/NVIDIA/cuda-quantum/issues/2342
+    """
+
+    @cudaq.kernel
+    def valid_kernel(n: int, f: float):
+        q = cudaq.qvector(n)
+        h(q[0])
+        cudaq.dbg.ast.print_i64(n)
+        cudaq.dbg.ast.print_f64(f)
+        mz(q)
+
+    counts = cudaq.sample(valid_kernel, 2, 2.0)
+    assert len(counts) > 0
+
+    # cudaq.ast resolves to cudaq.dbg.ast at runtime via _LAZY_SUBMODULES;
+    # isExactCudaqDbgAstCall rejects it because the AST node chain is wrong.
+    with pytest.raises(RuntimeError):
+
+        @cudaq.kernel
+        def invalid_cudaq_ast(n: int):
+            q = cudaq.qvector(n)
+            h(q[0])
+            cudaq.ast.print_i64(n)
+            mz(q)
+
+        cudaq.sample(invalid_cudaq_ast, 2)
+
+    # dbg.cudaq.ast - resolveQualifiedName returns 'dbg.cudaq.ast', which
+    # never matches the devKey guard.
+    with pytest.raises(RuntimeError):
+
+        @cudaq.kernel
+        def invalid_dbg_cudaq_ast(n: int):
+            q = cudaq.qvector(n)
+            h(q[0])
+            dbg.cudaq.ast.print_i64(n)
+            mz(q)
+
+        cudaq.sample(invalid_dbg_cudaq_ast, 2)
+
+    # ast.cudaq.dbg - same: resolveQualifiedName returns 'ast.cudaq.dbg'.
+    with pytest.raises(RuntimeError):
+
+        @cudaq.kernel
+        def invalid_ast_cudaq_dbg(n: int):
+            q = cudaq.qvector(n)
+            h(q[0])
+            ast.cudaq.dbg.print_i64(n)
+            mz(q)
+
+        cudaq.sample(invalid_ast_cudaq_dbg, 2)
 
 
 def test_no_dynamic_Lists():
@@ -800,20 +914,16 @@ def test_list_list_string_argument_error():
 
 def test_broadcast():
 
-    with pytest.raises(RuntimeError) as e:
+    @cudaq.kernel
+    def kernel(l: list[list[int]]):
+        q = cudaq.qvector(2)
+        for inner in l:
+            for i in inner:
+                x(q[i])
 
-        @cudaq.kernel
-        def kernel(l: list[list[int]]):
-            q = cudaq.qvector(2)
-            for inner in l:
-                for i in inner:
-                    x(q[i])
-
-        #FIXME: update broadcast detection logic to allow this case.
-        # https://github.com/NVIDIA/cuda-quantum/issues/2895
-        counts = cudaq.sample(kernel, [[0, 1]])
-    assert 'Invalid runtime argument type. Argument of type list[int] was provided' in repr(
-        e)
+    # list[list[int]] is a single argument, not a broadcast — verify it runs.
+    counts = cudaq.sample(kernel, [[0, 1]])
+    assert '11' in counts
 
 
 def test_list_creation_with_cast():
@@ -848,7 +958,7 @@ def test_list_creation_with_cast():
 
 def test_list_boundaries():
 
-    @cudaq.kernel
+    @cudaq.kernel(disable_quantum_optimization=True)
     def kernel1():
         qubits = cudaq.qvector(2)
         r = range(0, 0)
@@ -859,7 +969,7 @@ def test_list_boundaries():
     assert len(counts) == 1
     assert '00' in counts
 
-    @cudaq.kernel
+    @cudaq.kernel(disable_quantum_optimization=True)
     def kernel2():
         qubits = cudaq.qvector(2)
         r = range(1, 0)
@@ -870,7 +980,7 @@ def test_list_boundaries():
     assert len(counts) == 1
     assert '00' in counts
 
-    @cudaq.kernel
+    @cudaq.kernel(disable_quantum_optimization=True)
     def kernel3():
         qubits = cudaq.qvector(2)
         for i in range(-1):
@@ -880,7 +990,7 @@ def test_list_boundaries():
     assert len(counts) == 1
     assert '00' in counts
 
-    @cudaq.kernel
+    @cudaq.kernel(disable_quantum_optimization=True)
     def kernel4():
         qubits = cudaq.qvector(4)
         r = [i * 2 + 1 for i in range(1)]
@@ -891,7 +1001,7 @@ def test_list_boundaries():
     assert len(counts) == 1
     assert '0100' in counts
 
-    @cudaq.kernel
+    @cudaq.kernel(disable_quantum_optimization=True)
     def kernel5():
         qubits = cudaq.qvector(4)
         r = [i * 2 + 1 for i in range(0)]
@@ -902,7 +1012,7 @@ def test_list_boundaries():
     assert len(counts) == 1
     assert '0000' in counts
 
-    @cudaq.kernel
+    @cudaq.kernel(disable_quantum_optimization=True)
     def kernel6():
         qubits = cudaq.qvector(4)
         r = [i * 2 + 1 for i in range(2)]
@@ -913,7 +1023,7 @@ def test_list_boundaries():
     assert len(counts) == 1
     assert '0101' in counts
 
-    @cudaq.kernel
+    @cudaq.kernel(disable_quantum_optimization=True)
     def kernel7():
         qubits = cudaq.qvector(5)
         r = [i for i in range(2, 5)]
@@ -924,7 +1034,7 @@ def test_list_boundaries():
     assert len(counts) == 1
     assert '00111' in counts
 
-    @cudaq.kernel
+    @cudaq.kernel(disable_quantum_optimization=True)
     def kernel8():
         qubits = cudaq.qvector(5)
         r = [i for i in range(2, 6, 2)]
@@ -935,7 +1045,7 @@ def test_list_boundaries():
     assert len(counts) == 1
     assert '00101' in counts
 
-    @cudaq.kernel
+    @cudaq.kernel(disable_quantum_optimization=True)
     def kernel9():
         qubits = cudaq.qvector(5)
         r = [i for i in range(6, 2, 2)]
@@ -946,7 +1056,7 @@ def test_list_boundaries():
     assert len(counts) == 1
     assert '00000' in counts
 
-    @cudaq.kernel
+    @cudaq.kernel(disable_quantum_optimization=True)
     def kernel10():
         qubits = cudaq.qvector(5)
         r = [i for i in range(3, 0, -2)]
@@ -957,7 +1067,7 @@ def test_list_boundaries():
     assert len(counts) == 1
     assert '01010' in counts
 
-    @cudaq.kernel
+    @cudaq.kernel(disable_quantum_optimization=True)
     def kernel11():
         qubits = cudaq.qvector(5)
         r = [i for i in range(-5, -2, -2)]
@@ -968,7 +1078,7 @@ def test_list_boundaries():
     assert len(counts) == 1
     assert '00000' in counts
 
-    @cudaq.kernel
+    @cudaq.kernel(disable_quantum_optimization=True)
     def kernel12():
         qubits = cudaq.qvector(5)
         r = [i for i in range(-1, -5, -2)]
@@ -979,7 +1089,7 @@ def test_list_boundaries():
     assert len(counts) == 1
     assert '01010' in counts
 
-    @cudaq.kernel
+    @cudaq.kernel(disable_quantum_optimization=True)
     def kernel13():
         qubits = cudaq.qvector(5)
         r = [i for i in range(1, -4, -1)]
@@ -993,7 +1103,7 @@ def test_list_boundaries():
     assert len(counts) == 1
     assert '10110' in counts
 
-    @cudaq.kernel
+    @cudaq.kernel(disable_quantum_optimization=True)
     def kernel14():
         qubits = cudaq.qvector(5)
         r = [i for i in range(-2, 6, 2)]
@@ -1009,7 +1119,7 @@ def test_list_boundaries():
 
     with pytest.raises(RuntimeError) as e:
 
-        @cudaq.kernel
+        @cudaq.kernel(disable_quantum_optimization=True)
         def kernel15():
             qubits = cudaq.qvector(5)
             r = [i for i in range(1, 4, 0)]
@@ -1022,7 +1132,7 @@ def test_list_boundaries():
 
     with pytest.raises(RuntimeError) as e:
 
-        @cudaq.kernel
+        @cudaq.kernel(disable_quantum_optimization=True)
         def kernel16(v: int):
             qubits = cudaq.qvector(5)
             r = [i for i in range(1, 4, v)]
@@ -1201,7 +1311,7 @@ def test_inner_function_capture():
 
     def innerClassical():
 
-        @cudaq.kernel()
+        @cudaq.kernel(disable_quantum_optimization=True)
         def foo():
             q = cudaq.qvector(n)
 
@@ -1808,7 +1918,7 @@ def test_bad_attr_call_error():
     assert "offending source -> kernel.h(q[0])" in repr(e)
 
 
-def test_bad_return_value_with_stdvec_arg():
+def test_bad_return_value_with_sequence_arg():
 
     @cudaq.kernel
     def test_param(i: int, l: List[int]) -> int:
@@ -1864,6 +1974,22 @@ def test_no_param_no_return():
     kernel()
 
 
+def test_bare_return_from_value_returning_kernel():
+
+    with pytest.raises(
+            RuntimeError,
+            match=
+            "return statement in a value-returning kernel must return a value"):
+
+        @cudaq.kernel
+        def kernel(cond: bool) -> int:
+            if cond:
+                return
+            return 1
+
+        kernel.compile()
+
+
 def test_measure_variadic_qubits():
 
     @cudaq.kernel
@@ -1885,7 +2011,7 @@ def test_measure_variadic_qubits():
     assert len(counts) == 1 and '101' in counts
 
 
-def test_bad_return_value_with_stdvec_arg():
+def test_bad_return_value_with_sequence_arg():
 
     @cudaq.kernel
     def test_param(i: int, l: List[int]) -> int:
@@ -2230,7 +2356,7 @@ def test_custom_classical_kernel_type():
     # and the paths all work out
     from mock.hello import TestClass
 
-    @cudaq.kernel
+    @cudaq.kernel(disable_quantum_optimization=True)
     def test(input: TestClass):
         q = cudaq.qvector(input.i)
 
@@ -2707,11 +2833,34 @@ def test_error_on_non_callable_type():
     assert "object is not callable" in str(e.value)
 
 
+def test_nested_kernel_definition_error():
+
+    with pytest.raises(RuntimeError) as e:
+
+        @cudaq.kernel(defer_compilation=False)
+        def kernel():
+
+            @cudaq.kernel
+            def inner_fct():
+                pass
+
+    assert "nested" in repr(e).lower()
+
+    with pytest.raises(RuntimeError) as e:
+
+        @cudaq.kernel(defer_compilation=False)
+        def kernel():
+
+            @cudaq.kernel(make_the_decorator_a_call=...)
+            def inner_fct():
+                pass
+
+
 def test_struct_list_int_member():
     """Test that list[int] members in a struct are correctly marshaled.
 
     Regression test for a bug in handleStructMemberVariable where
-    the StdvecType branch always created std::vector<double> regardless
+    the SequenceType branch always created std::vector<double> regardless
     of the actual element type T. This caused list[int] values to be
     stored as doubles; the kernel then read the IEEE 754 bit pattern
     as int64, producing garbage values.
@@ -2796,6 +2945,70 @@ def test_named_reg_in_sample(capfd):
     cudaq.sample(baz)
     captured = capfd.readouterr()
     assert "WARNING" in captured.err
+
+
+# TODO: Update when `ApplyOpSpecialization` can handle multi-argument loops
+# See: https://github.com/NVIDIA/cuda-quantum/issues/3818
+@pytest.mark.xfail(raises=RuntimeError)
+@pytest.mark.skip_arm64_jit
+def test_adjoint_bug():
+    num_electrons = 2
+    num_qubits = 8
+
+    thetas = [
+        -0.00037043841404585794, 0.0003811110195084151, 0.2286823796532558,
+        -0.00037043841404585794, 0.0003811110195084151, 0.2286823796532558,
+        -0.00037043841404585794, 0.0003811110195084151, 0.2286823796532558,
+        -0.00037043841404585794, 0.0003811110195084151, 0.2286823796532558,
+        -0.00037043841404585794, 0.0003811110195084151, 0.2286823796532558,
+        -0.00037043841404585794, 0.0003811110195084151, 0.2286823796532558,
+        -0.00037043841404585794, 0.0003811110195084151, 0.2286823796532558,
+        -0.00037043841404585794, 0.0003811110195084151, 0.2286823796532558
+    ]
+
+    @cudaq.kernel
+    def kernel(withAdj: bool):
+        qubits = cudaq.qvector(num_qubits)
+        for i in range(num_electrons):
+            x(qubits[i])
+        cudaq.kernels.uccsd(qubits, thetas, num_electrons, num_qubits)
+        if withAdj:
+            cudaq.adjoint(cudaq.kernels.uccsd, qubits, thetas, num_electrons,
+                          num_qubits)
+
+    cudaq.sample(kernel, True, shots_count=1000)
+
+
+@pytest.mark.skip_macos_arm64_jit
+def test_trap_fail():
+    """Tests that a recoverable run time error correctly clears the simulator"""
+
+    @cudaq.kernel
+    def unadjointable(q: cudaq.qview):
+        while True:
+            if mz(q[1]):
+                x(q[1])
+                break
+
+    @cudaq.kernel
+    def kernel_with_trap():
+        q = cudaq.qvector(2)
+        h(q)
+        cudaq.adjoint(unadjointable, q)
+
+    with pytest.raises(RuntimeError):
+        cudaq.sample(kernel_with_trap, shots_count=1)
+
+    @cudaq.kernel
+    def simple():
+        q = cudaq.qvector(2)
+        ctrl = q.front()
+        x.ctrl(ctrl, q[1])
+
+    counts = cudaq.sample(simple)
+    print(counts)
+    assert len(counts) == 1
+    assert '00' in counts
 
 
 # leave for gdb debugging

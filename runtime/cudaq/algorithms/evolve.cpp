@@ -8,14 +8,14 @@
 
 #include "common/AnalogHamiltonian.h"
 #include "common/EvolveResult.h"
+#include "cudaq.h"
 #include "cudaq/operators.h"
 #include "cudaq/runtime/logger/logger.h"
 #include "cudaq/schedule.h"
 #include <random>
 #include <sstream>
 #include <string>
-
-namespace cudaq::__internal__ {
+namespace cudaq::detail {
 
 evolve_result evolveSingle(const cudaq::rydberg_hamiltonian &hamiltonian,
                            const cudaq::schedule &schedule,
@@ -86,11 +86,12 @@ evolve_result evolveSingle(const cudaq::rydberg_hamiltonian &hamiltonian,
   platform.with_execution_context(ctx, [&]() {
     auto dynamicResult = cudaq::altLaunchKernel(
         programName.str().c_str(), KernelThunkType(nullptr),
-        (void *)(const_cast<char *>(programString.c_str())), 0, 0);
+        (void *)(const_cast<char *>(programString.c_str())),
+        programString.size(), 0);
   });
   auto sampleResults = ctx.result;
 
   return evolve_result(sampleResults);
 }
 
-} // namespace cudaq::__internal__
+} // namespace cudaq::detail

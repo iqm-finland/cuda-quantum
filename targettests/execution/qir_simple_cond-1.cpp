@@ -7,9 +7,8 @@
  ******************************************************************************/
 
 // clang-format off
-// RUN: nvq++ --target stim --enable-mlir %s -o %t && %t | FileCheck %s
+// RUN: if %stim_avail; then nvq++ --target stim %s -o %t && %t | FileCheck %s ; fi
 // RUN: nvq++ --target quantinuum --quantinuum-machine Helios-1SC --emulate %s -o %t && %t | FileCheck %s
-// RUN: nvq++ --enable-mlir %s -o %t
 // clang-format on
 
 #include <cudaq.h>
@@ -53,7 +52,7 @@ int main() {
     std::cout << "FAILURE: Unexpected bitstrings found\n";
     return 1;
   }
-  
+
   std::cout << "SUCCESS\n";
   return 0;
 }

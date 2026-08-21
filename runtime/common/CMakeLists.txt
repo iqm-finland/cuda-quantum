@@ -11,7 +11,9 @@ set(LIBRARY_NAME cudaq-common)
 
 set(COMMON_EXTRA_DEPS "")
 set(COMMON_RUNTIME_SRC
+  AnalysisScope.cpp
   CodeGenConfig.cpp
+  cudaq_json.cpp
   CustomOp.cpp
   DeviceCodeRegistry.cpp
   Environment.cpp
@@ -26,6 +28,9 @@ set(COMMON_RUNTIME_SRC
   SampleResult.cpp
   ServerHelper.cpp
   Trace.cpp
+  CompiledModule.cpp
+  KernelArgs.cpp
+  "${CMAKE_BINARY_DIR}/runtime/common/Version.cpp"
 )
 
 # Create the cudaq-common library
@@ -39,11 +44,14 @@ target_include_directories(${LIBRARY_NAME}
     PRIVATE .
         $<BUILD_INTERFACE:${LLVM_INCLUDE_DIRS}>
         ${CMAKE_SOURCE_DIR}/tpls/eigen
-        ${CMAKE_SOURCE_DIR}/runtime)
+        ${CMAKE_SOURCE_DIR}/runtime
+	${CMAKE_SOURCE_DIR}/include
+)
 
 target_link_libraries(${LIBRARY_NAME}
   PUBLIC
     cudaq-operator
+    CUDAQTargetConfig
   PRIVATE
     cudaq-logger
     fmt::fmt-header-only
@@ -51,10 +59,16 @@ target_link_libraries(${LIBRARY_NAME}
 
 # Bug in GCC 12 leads to spurious warnings (-Wrestrict)
 # https://gcc.gnu.org/bugzilla/show_bug.cgi?id=105329
+# Scope to CXX-language compiles via a generator expression so the flag
+# does NOT propagate through cmake's PUBLIC interface options into nvcc
+# command lines for consumer CUDA targets. nvcc forwards host options to
+# its own host compiler, which can be a different gcc than CMAKE_CXX_COMPILER
+# (e.g. CMAKE_CXX_COMPILER=gcc-12 but CMAKE_CUDA_HOST_COMPILER=gcc-13, where
+# gcc-13 has removed --param=evrp-mode= and would error on it).
 if (CMAKE_COMPILER_IS_GNUCXX
   AND CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 12.0.0
   AND CMAKE_CXX_COMPILER_VERSION VERSION_LESS 13.0.0)
-  target_compile_options(${LIBRARY_NAME} PUBLIC --param=evrp-mode=legacy)
+  target_compile_options(${LIBRARY_NAME} PUBLIC $<$<COMPILE_LANGUAGE:CXX>:--param=evrp-mode=legacy>)
 endif()
 
 # We can only build the RestClient support if we have OpenSSL
@@ -66,15 +80,9 @@ if(OPENSSL_FOUND)
   if(APPLE)
     target_link_libraries(${LIBRARY_NAME} PRIVATE cpr::cpr ZLIB::ZLIB)
   else()
-    target_link_libraries(${LIBRARY_NAME} PRIVATE cpr::cpr -Wl,--start-group ZLIB::ZLIB)
+    target_link_libraries(${LIBRARY_NAME} PRIVATE cpr::cpr -Wl,--start-group ZLIB::ZLIB ${CMAKE_DL_LIBS})
   endif()
   target_compile_definitions(${LIBRARY_NAME} PRIVATE -DCUDAQ_RESTCLIENT_AVAILABLE)
-  # Override the global flat_namespace for this library. cudaq-common doesn't need
-  # LLVM symbol sharing, and flat_namespace causes issues with statically-linked
-  # OpenSSL assembly code linked with flat namespace.
-  if(APPLE)
-    target_link_options(${LIBRARY_NAME} PRIVATE "-Wl,-twolevel_namespace")
-  endif()
 endif()
 
 
@@ -85,73 +93,20 @@ if (CUDAQ_UPPERCASE_CMAKE_BUILD_TYPE STREQUAL "DEBUG")
 endif()
 
 # Install the target
-install(TARGETS ${LIBRARY_NAME} EXPORT cudaq-common-targets DESTINATION lib)
+install(TARGETS ${LIBRARY_NAME}
+        EXPORT cudaq-common-targets
+        DESTINATION lib
+        COMPONENT Runtime)
 install(EXPORT cudaq-common-targets
         FILE CUDAQCommonTargets.cmake
         NAMESPACE cudaq::
-        DESTINATION lib/cmake/cudaq)
+        DESTINATION lib/cmake/cudaq
+        COMPONENT Development)
 if(EXISTS "$ENV{CURL_INSTALL_PREFIX}/cacert.pem")
   # Copy to build directory so that developers can run from the build directory
   file(COPY "$ENV{CURL_INSTALL_PREFIX}/cacert.pem" DESTINATION "${CMAKE_BINARY_DIR}")
   # Also include it as an install target
-  install(FILES "$ENV{CURL_INSTALL_PREFIX}/cacert.pem" DESTINATION .)
+  install(FILES "$ENV{CURL_INSTALL_PREFIX}/cacert.pem"
+          DESTINATION .
+          COMPONENT Runtime)
 endif()
-
-## ----- Runtime MLIR Library -----
-## We need support in the runtime for compiler-level things,
-## but we have to collate this functionality in one place to avoid
-## LLVM starting up static Options more than once. Create a library
-## here called cudaq-mlir-runtime that cudaq-builder and cudaq-rest-qpu
-## can link to and get MLIR/LLVM things uniformly
-
-add_library(cudaq-mlir-runtime
-  SHARED
-    ArgumentConversion.cpp
-    CodeGenConfig.cpp
-    Compiler.cpp
-    Environment.cpp
-    JIT.cpp
-    RuntimeMLIR.cpp
-    RuntimeCppMLIR.cpp
-    LayoutInfo.cpp
-)
-set_property(GLOBAL APPEND PROPERTY CUDAQ_RUNTIME_LIBS cudaq-mlir-runtime)
-
-set_source_files_properties(
-  CodeGenConfig.cpp
-  Environment.cpp
-  JIT.cpp
-  RuntimeMLIR.cpp
-)
-
-target_include_directories(cudaq-mlir-runtime
-  PRIVATE .
-    ${CMAKE_SOURCE_DIR}/tpls/spdlog/include
-    ${CMAKE_SOURCE_DIR}/tpls/fmt/include
-    ${CMAKE_SOURCE_DIR}/runtime)
-
-target_link_libraries(cudaq-mlir-runtime
-  PUBLIC
-    nvqir
-    CCDialect
-    QuakeDialect
-    OptCodeGen
-    OptTransforms
-    MLIRTranslateLib
-    MLIRIR
-    MLIRParser
-    MLIRPass
-    MLIRTranslateLib
-    MLIRSupport
-    MLIROptLib
-    MLIRExecutionEngine
-    MLIRTransforms
-    MLIRTargetLLVMIRExport
-    MLIRLLVMCommonConversion
-    MLIRLLVMToLLVMIRTranslation
-  PRIVATE
-    CUDAQTargetConfigUtil
-    cudaq-logger
-)
-
-install(TARGETS cudaq-mlir-runtime DESTINATION lib)

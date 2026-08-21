@@ -26,12 +26,14 @@ if "utils" not in sys.path:
 iqm_client = pytest.importorskip("iqm.iqm_client")
 
 try:
-    from start_mock_qpu import start_server
-    from mock_qpu.iqm.mock_iqm_cortex_cli import write_a_mock_tokens_file
-    from mock_qpu import get_backend_port
+    from utils.mock_qpu.iqm import startServer
+    from utils.mock_qpu.iqm.mock_iqm_cortex_cli import write_a_mock_tokens_file
+    from utils.mock_qpu import get_backend_port
 except:
     pytest.skip("Mock qpu not available, skipping IQM tests.",
                 allow_module_level=True)
+
+pytestmark = pytest.mark.xdist_group("iqm_mock")
 
 
 def assert_close(want, got, tolerance=1.0e-5) -> bool:
@@ -45,7 +47,7 @@ def startUpMockServer():
         write_a_mock_tokens_file(tmp_tokens_file.name)
 
     # Launch the Mock Server
-    p = Process(target=start_server, args=("iqm",))
+    p = Process(target=startServer, args=("iqm",))
     p.start()
 
     # Import port number of the mock server
@@ -162,6 +164,22 @@ def test_iqm_u3_ctrl_decomposition():
     result = cudaq.sample(kernel)
 
 
+def test_iqm_ccx_qvec_slice_control():
+
+    @cudaq.kernel
+    def check_mcx():
+        qubits = cudaq.qvector(4)
+        x.ctrl(qubits[1:3], qubits[0])
+
+    @cudaq.kernel
+    def check_mcx1():
+        qubits = cudaq.qvector(4)
+        x.ctrl(qubits[1:4], qubits[0])
+
+    cudaq.sample(check_mcx)
+    cudaq.sample(check_mcx1)
+
+
 def test_IQM_state_preparation():
     shots = 10000
 
@@ -268,8 +286,9 @@ def test_2q_unitary_synthesis():
         custom_cnot(qubits[0], qubits[1])
 
     counts = cudaq.sample(bell_pair)
-    # Gives result like { 00:500 01:0 10:0 11:500 }
-    assert counts['01'] == 0 and counts['10'] == 0
+    # Gives result like { 00:500 01:0 10:0 11:500 } or { 00:500 11:500 }
+    assert ('01' not in counts or counts['01'] == 0) and ('10' not in counts or
+                                                          counts['10'] == 0)
 
     cudaq.register_operation(
         "custom_cz", np.array([1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0,
@@ -285,7 +304,10 @@ def test_2q_unitary_synthesis():
         x(controls)
 
     counts = cudaq.sample(ctrl_z_kernel)
-    assert counts["0010011"] == 1000
+    # The 5th qubit in `qubits` is not referenced and may be deleted
+    assert ("0010011" in counts and
+            counts["0010011"] == 1000) or ("001011" in counts and
+                                           counts["001011"] == 1000)
 
 
 def test_explicit_measurement():

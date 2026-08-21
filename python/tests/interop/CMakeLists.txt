@@ -17,7 +17,7 @@ set(CMAKE_INSTALL_RPATH
 
 add_subdirectory(quantum_lib)
 
-pybind11_add_module(cudaq_test_cpp_algo
+nanobind_add_module(cudaq_test_cpp_algo
   test_cpp_quantum_algorithm_module.cpp
 )
 
@@ -26,12 +26,18 @@ target_link_libraries(cudaq_test_cpp_algo
     cudaq
     quantum_lib
     cudaq-python-interop
+    cudaq-logger
+    cudaq-mlir-runtime
 )
+
+if(APPLE)
+  target_link_options(cudaq_test_cpp_algo PRIVATE -Wl,-undefined,dynamic_lookup)
+endif()
 
 target_include_directories(cudaq_test_cpp_algo
   PRIVATE
     ${CMAKE_SOURCE_DIR}/python
 )
-  
+
 add_dependencies(cudaq_test_cpp_algo nvq++)
 

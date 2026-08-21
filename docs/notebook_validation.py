@@ -44,14 +44,14 @@ pattern = r"set_target\(\s*(\\?['\"])([^'\"]+)\1(?:\s*,\s*option\s*=\s*(\\?['\"]
 # These cannot run on CPU-only systems even with fallback logic
 GPU_REQUIRED_NOTEBOOKS = [
     'afqmc.ipynb',  # AFQMC algorithm, times out on CPU
-    'digitized_counterdiabatic_qaoa.ipynb',  # QAOA optimization, times out on CPU
-    'qm_mm_pe.ipynb',  # VQE+SCF with many iterations, times out on CPU
-    'vqe_advanced.ipynb',  # VQE optimization with `mqpu`, requires multi-GPU
-    'edge_detection.ipynb',  # Requires CuPy
     'entanglement_acc_hamiltonian_simulation.ipynb',  # Requires CuPy
     'skqd.ipynb',  # Requires CuPy
-    'divisive_clustering_coresets.ipynb',  # Multi-GPU MPI demo
-    'quantum_pagerank.ipynb',  # Requires dynamics target
+]
+
+# Notebooks for which we set a longer timeout.
+LONG_RUNNING_NOTEBOOKS = [
+    "qsci.ipynb",
+    "uccsd_wf_ansatz.ipynb",
 ]
 
 
@@ -98,11 +98,14 @@ def validate(notebook_filename, available_backends):
     return any(target in available_backends for target in targets_found)
 
 
-def execute(notebook_filename, jupyter_kernel=None, timeout_seconds=600):
+def execute(notebook_filename, jupyter_kernel=None, timeout_seconds=300):
     """Execute a notebook with timeout."""
     notebook_filename_out = notebook_filename.replace('.ipynb',
                                                       '.nbconvert.ipynb')
     notebook_basename = os.path.basename(notebook_filename)
+    if notebook_basename in LONG_RUNNING_NOTEBOOKS:
+        timeout_seconds = 3600
+
     try:
         start_time = time.perf_counter()
         cmd = [
@@ -181,13 +184,7 @@ if __name__ == "__main__":
         notebooks_success, notebooks_skipped, notebooks_failed = (
             [] for i in range(3))
 
-        ## `quantum_transformer`:
-        ## See: https://github.com/NVIDIA/cuda-quantum/issues/2689
-        notebooks_skipped = [
-            'quantum_transformer.ipynb', 'logical_aim_sqale.ipynb',
-            'hybrid_quantum_neural_networks.ipynb',
-            'unitary_compilation_diffusion_models.ipynb', 'qsci.ipynb'
-        ]
+        notebooks_skipped = []
 
         for notebook_filename in notebook_filenames:
             base_name = os.path.basename(notebook_filename)

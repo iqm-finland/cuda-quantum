@@ -20,7 +20,7 @@
 #include <variant>
 #include <vector>
 
-namespace cudaq::details {
+namespace cudaq::detail {
 void warn(const std::string_view msg);
 
 /// @brief Typedef for a matrix wrapper using std::vector<cudaq::complex>
@@ -58,7 +58,7 @@ inline matrix_wrapper scale(const cudaq::real s, const matrix_wrapper &A) {
     result.push_back(s * a);
   return result;
 }
-} // namespace cudaq::details
+} // namespace cudaq::detail
 
 namespace cudaq {
 
@@ -100,6 +100,31 @@ static constexpr const char *noise_model_strings[] = {
     "depolarization2"};
 
 std::string get_noise_model_type_name(noise_model_type type);
+
+/// @brief Check whether a matrix is a scaled unitary matrix, i.e., `k * U`
+/// where U is a unitary matrix. If so, returns the `k` factor.
+/// Otherwise, returns `nullopt`.
+///
+/// @param mat Flattened row-major matrix
+/// @param eps Numerical tolerance for comparisons
+/// @return Scale factor k if matrix is k*U where U is unitary, `nullopt`
+/// otherwise
+std::optional<double>
+isScaledUnitary(const std::vector<std::complex<double>> &mat,
+                double eps = 1e-6);
+
+/// @brief Determine if a vector of Kraus operators forms a valid unitary
+/// mixture. If so, returns the unitaries and their probabilities.
+///
+/// @param krausOps Vector of Kraus operator matrices
+/// @param tol Numerical tolerance for validation
+/// @return Pair of (probabilities, unitary_matrices) if valid, `nullopt`
+/// otherwise
+std::optional<std::pair<std::vector<double>,
+                        std::vector<std::vector<std::complex<double>>>>>
+computeUnitaryMixture(
+    const std::vector<std::vector<std::complex<double>>> &krausOps,
+    double tol = 1e-6);
 
 /// @brief A kraus_op represents a single Kraus operation,
 /// described as a complex matrix of specific size. The matrix
@@ -175,10 +200,12 @@ void validateCompletenessRelation_fp32(const std::vector<kraus_op> &ops);
 void validateCompletenessRelation_fp64(const std::vector<kraus_op> &ops);
 void generateUnitaryParameters_fp32(
     const std::vector<kraus_op> &ops,
-    std::vector<std::vector<std::complex<double>>> &, std::vector<double> &);
+    std::vector<std::vector<std::complex<double>>> &, std::vector<double> &,
+    std::vector<bool> &);
 void generateUnitaryParameters_fp64(
     const std::vector<kraus_op> &ops,
-    std::vector<std::vector<std::complex<double>>> &, std::vector<double> &);
+    std::vector<std::vector<std::complex<double>>> &, std::vector<double> &,
+    std::vector<bool> &);
 
 /// @brief A kraus_channel represents a quantum noise channel
 /// on specific qubits. The action of the noise channel is
@@ -229,6 +256,11 @@ public:
   /// probabilities of those ops. These values are always "double" regardless
   /// of whether cudaq::real is float or double.
   std::vector<double> probabilities;
+
+  /// @brief For unitary mixture channels, flags indicating which operators are
+  /// identity (or global-phase-times-identity). Populated during
+  /// generateUnitaryParameters(). Empty for non-unitary channels.
+  std::vector<bool> identity_flags;
 
   /// @brief Names for each Kraus operator, parallel to ops.
   /// For standard Pauli channels these are gate names (e.g., "id", "x").
@@ -301,12 +333,21 @@ public:
   void generateUnitaryParameters() {
     unitary_ops.clear();
     probabilities.clear();
+    identity_flags.clear();
     if constexpr (std::is_same_v<cudaq::complex::value_type, float>) {
       generateUnitaryParameters_fp32(ops, this->unitary_ops,
-                                     this->probabilities);
+                                     this->probabilities, this->identity_flags);
       return;
     }
-    generateUnitaryParameters_fp64(ops, this->unitary_ops, this->probabilities);
+    generateUnitaryParameters_fp64(ops, this->unitary_ops, this->probabilities,
+                                   this->identity_flags);
+  }
+
+  /// @brief Check whether the operator at the given index is an identity.
+  /// Determined from the unitary matrix data during channel construction,
+  /// recognizing both exact identity and global-phase-times-identity.
+  bool is_identity_op(std::size_t index) const {
+    return index < identity_flags.size() && identity_flags[index];
   }
 
   /// @brief Populate op_names with default names of the form type_name[index].
@@ -415,7 +456,7 @@ public:
   /// @return
   bool empty() const {
     return noiseModel.empty() && defaultNoiseModel.empty() &&
-           gatePredicates.empty();
+           gatePredicates.empty() && registeredChannels.empty();
   }
 
   /// @brief Add the Kraus channel to the specified one-qubit quantum
@@ -475,8 +516,8 @@ public:
     // per spec - caller provides noise model, but channel not registered,
     // warning generated, no channel application.
     if (iter == registeredChannels.end()) {
-      details::warn("requested kraus channel not registered with this "
-                    "noise_model. skipping channel application.");
+      detail::warn("requested kraus channel not registered with this "
+                   "noise_model. skipping channel application.");
       return kraus_channel();
     }
 
@@ -548,7 +589,9 @@ public:
                    const kraus_channel &channel) {
     std::vector<std::string> names;
     std::apply(
-        [&](const auto &...elements) { (names.push_back(elements.name), ...); },
+        [&](const auto &...elements) {
+          (names.emplace_back(elements.name), ...);
+        },
         std::tuple<QuantumOp...>());
     for (auto &name : names)
       add_channel(name, qubits, channel);
@@ -560,7 +603,9 @@ public:
   void add_channel(const PredicateFuncTy &pred) {
     std::vector<std::string> names;
     std::apply(
-        [&](const auto &...elements) { (names.push_back(elements.name), ...); },
+        [&](const auto &...elements) {
+          (names.emplace_back(elements.name), ...);
+        },
         std::tuple<QuantumOp...>());
     for (auto &name : names)
       add_channel(name, pred);
@@ -573,7 +618,9 @@ public:
                              int numControls = 0) {
     std::vector<std::string> names;
     std::apply(
-        [&](const auto &...elements) { (names.push_back(elements.name), ...); },
+        [&](const auto &...elements) {
+          (names.emplace_back(elements.name), ...);
+        },
         std::tuple<QuantumOp...>());
     for (auto &name : names)
       add_all_qubit_channel(name, channel, numControls);
@@ -595,7 +642,8 @@ public:
                const std::vector<std::size_t> &controlQubits = {},
                const std::vector<double> &params = {}) const {
     QuantumOp op;
-    return get_channels(op.name, targetQubits, controlQubits, params);
+    return get_channels(std::string(op.name), targetQubits, controlQubits,
+                        params);
   }
 };
 
@@ -886,20 +934,20 @@ public:
       throw std::runtime_error("Sum of pauli1 parameters is >1. Must be <= 1.");
 
     std::complex<cudaq::real> i{0, 1};
-    cudaq::details::matrix_wrapper I({1, 0, 0, 1});
-    cudaq::details::matrix_wrapper X({0, 1, 1, 0});
-    cudaq::details::matrix_wrapper Y({0, -i, i, 0});
-    cudaq::details::matrix_wrapper Z({1, 0, 0, -1});
+    cudaq::detail::matrix_wrapper I({1, 0, 0, 1});
+    cudaq::detail::matrix_wrapper X({0, 1, 1, 0});
+    cudaq::detail::matrix_wrapper Y({0, -i, i, 0});
+    cudaq::detail::matrix_wrapper Z({1, 0, 0, -1});
     cudaq::real p0 =
         std::sqrt(std::max(static_cast<cudaq::real>(1.0 - p[0] - p[1] - p[2]),
                            static_cast<cudaq::real>(0)));
     cudaq::real px = std::sqrt(p[0]);
     cudaq::real py = std::sqrt(p[1]);
     cudaq::real pz = std::sqrt(p[2]);
-    std::vector<cudaq::complex> k0v = details::scale(p0, I);
-    std::vector<cudaq::complex> k1v = details::scale(px, X);
-    std::vector<cudaq::complex> k2v = details::scale(py, Y);
-    std::vector<cudaq::complex> k3v = details::scale(pz, Z);
+    std::vector<cudaq::complex> k0v = detail::scale(p0, I);
+    std::vector<cudaq::complex> k1v = detail::scale(px, X);
+    std::vector<cudaq::complex> k2v = detail::scale(py, Y);
+    std::vector<cudaq::complex> k3v = detail::scale(pz, Z);
     ops = {k0v, k1v, k2v, k3v};
     this->parameters.reserve(p.size());
     for (auto pp : p)
@@ -945,20 +993,19 @@ public:
       throw std::runtime_error("Sum of pauli2 parameters is >1. Must be <= 1.");
 
     std::complex<cudaq::real> i{0, 1};
-    cudaq::details::matrix_wrapper I({1, 0, 0, 1});
-    cudaq::details::matrix_wrapper X({0, 1, 1, 0});
-    cudaq::details::matrix_wrapper Y({0, -i, i, 0});
-    cudaq::details::matrix_wrapper Z({1, 0, 0, -1});
+    cudaq::detail::matrix_wrapper I({1, 0, 0, 1});
+    cudaq::detail::matrix_wrapper X({0, 1, 1, 0});
+    cudaq::detail::matrix_wrapper Y({0, -i, i, 0});
+    cudaq::detail::matrix_wrapper Z({1, 0, 0, -1});
     cudaq::real pii = std::max(static_cast<cudaq::real>(1.0 - sum),
                                static_cast<cudaq::real>(0));
 
     ops.reserve(16);
     // Use a lambda to avoid excessive line wrapping below
-    auto define_op = [this](double _p,
-                            const cudaq::details::matrix_wrapper &_m1,
-                            const cudaq::details::matrix_wrapper &_m2) {
+    auto define_op = [this](double _p, const cudaq::detail::matrix_wrapper &_m1,
+                            const cudaq::detail::matrix_wrapper &_m2) {
       ops.push_back(
-          details::scale(std::sqrt(_p), details::kron(_m1, 2, 2, _m2, 2, 2)));
+          detail::scale(std::sqrt(_p), detail::kron(_m1, 2, 2, _m2, 2, 2)));
     };
     define_op(pii, I, I);
     define_op(p[0], I, X);
@@ -1022,7 +1069,7 @@ public:
   constexpr static std::size_t num_parameters = 1;
   /// @brief Number of targets
   constexpr static std::size_t num_targets = 2;
-  depolarization2(const std::vector<cudaq::real> p) : kraus_channel() {
+  depolarization2(const std::vector<cudaq::real> &p) : kraus_channel() {
     auto probability = p[0];
     if (probability < 0.0 || probability > 1.0)
       throw std::runtime_error(
@@ -1046,7 +1093,7 @@ public:
     ops.reserve(16);
     for (std::size_t i = 0; i < 4; ++i) {
       for (std::size_t j = 0; j < 4; ++j) {
-        auto kron_product = details::kron(paulis[i], 2, 2, paulis[j], 2, 2);
+        auto kron_product = detail::kron(paulis[i], 2, 2, paulis[j], 2, 2);
 
         if (i == 0 && j == 0) {
           for (auto &elem : kron_product) {

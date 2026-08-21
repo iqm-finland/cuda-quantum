@@ -15,6 +15,9 @@ ARG pip_install_flags=""
 ARG preinstalled_modules="numpy pytest nvidia-cublas-cu12"
 
 ARG DEBIAN_FRONTEND=noninteractive
+# Tolerate transient apt mirror failures.
+RUN echo 'Acquire::Retries "5";' > /etc/apt/apt.conf.d/80-retries \
+    && echo 'Acquire::Retries::Delay::Maximum "30";' >> /etc/apt/apt.conf.d/80-retries
 RUN apt-get update && apt-get install -y --no-install-recommends wget \
         python${python_version} python${python_version}-venv
 
@@ -43,7 +46,13 @@ RUN if [ -n "$pip_install_flags" ]; then \
     fi
 
 # Working around issue https://github.com/pypa/pip/issues/11153.
-RUN wget https://github.com/rapidsai/gha-tools/releases/latest/download/tools.tar.gz -O - | tar -xz -C /usr/local/bin && \
+# Retry download to a file (not a pipe) to survive transient/truncated fetches.
+RUN for i in 1 2 3; do \
+        wget --tries=3 --retry-connrefused --waitretry=5 --timeout=30 \
+            https://github.com/rapidsai/gha-tools/releases/latest/download/tools.tar.gz -O /tmp/tools.tar.gz \
+        && gzip -t /tmp/tools.tar.gz && tar -xzf /tmp/tools.tar.gz -C /usr/local/bin && break \
+        || { echo "gha-tools download attempt $i failed; retrying..."; sleep 5; }; \
+    done && rm -f /tmp/tools.tar.gz && \
     RAPIDS_PIP_EXE="python${python_version} -m pip" \
     /usr/local/bin/rapids-pip-retry install ${pip_install_flags} /tmp/$cuda_quantum_wheel
 RUN if [ -n "$optional_dependencies" ]; then \

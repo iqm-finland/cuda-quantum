@@ -7,7 +7,6 @@
 # ============================================================================ #
 
 set(LIBRARY_NAME nvqir-stim)
-set(INTERFACE_POSITION_INDEPENDENT_CODE ON)
 
 set(STIM_SOURCE_DIR ${CMAKE_SOURCE_DIR}/tpls/Stim)
 set(STIM_BINARY_DIR ${CMAKE_BINARY_DIR}/tpls/Stim)
@@ -75,6 +74,7 @@ add_custom_command(
 set_target_properties(${LIBRARY_NAME}
     PROPERTIES INSTALL_RPATH "${CMAKE_INSTALL_RPATH}:${LLVM_BINARY_DIR}/lib")
 
-install(TARGETS ${LIBRARY_NAME} DESTINATION lib)
+install(TARGETS ${LIBRARY_NAME} DESTINATION lib
+        COMPONENT Runtime)
 
 add_target_config(stim)

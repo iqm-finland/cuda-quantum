@@ -19,6 +19,8 @@
 #   and run this script from the home directory.
 #   Check the logged output.
 
+this_file_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # Auto-setup if running from repo root (detected by presence of docs/sphinx/examples)
 # This allows running validation directly from the repo without manual setup.
 if [ -d "docs/sphinx/examples" ]; then
@@ -86,7 +88,7 @@ should_skip_python_example() {
             skip_reason="requires cupy (CUDA-only)"
             return 0
         fi
-        # Check for nvidia/tensornet targets (direct or via remote-mqpu)
+        # Check for nvidia/tensornet targets 
         if grep -q "set_target.*['\"]nvidia\|['\"]tensornet" "$file"; then
             skip_reason="requires GPU target"
             return 0
@@ -116,6 +118,23 @@ installed_backends=`\
     do basename $file | cut -d "." -f 1; \
     done`
 
+should_skip_install_validation_target() {
+  local target_config=$1
+  local skipped_target_configs=(
+    "opt-test.yml"
+    "compiler-bench-nisq.yml"
+    "compiler-bench-ftqc-logical.yml"
+    "compiler-bench-ftqc-clifford-t.yml"
+  )
+
+  for skipped_target_config in "${skipped_target_configs[@]}"; do
+    if [[ "${target_config}" == "${skipped_target_config}" ]]; then
+      return 0
+    fi
+  done
+  return 1
+}
+
 # remote_rest targets are automatically filtered, 
 # so is execution on the photonics backend and the stim backend
 # This will test all NVIDIA-derivative targets in the legacy mode,
@@ -128,7 +147,7 @@ available_backends=`\
           continue
         fi 
         # Skip optimization test targets
-        if [[ $file == *"opt-test.yml" ]]; then
+        if should_skip_install_validation_target "$(basename $file)"; then
           continue
         fi
         if grep -q "nvqir-simulation-backend: stim" $file ; then 
@@ -138,6 +157,8 @@ available_backends=`\
         qpu=${platform##* }
         requirements=$(cat $file | grep "gpu-requirements:")
         gpus=${requirements##* }
+        # Full pasqal requires QRMI shared libraries and supported cluster.
+        # Generic installation validation skips it unless a dedicated environment is provided.
         if [ "${qpu}" != "remote_rest" ] \
         && [ "${qpu}" != "fermioniq" ] && [ "${qpu}" != "orca" ] \
         && [ "${qpu}" != "pasqal" ] && [ "${qpu}" != "quera" ] \
@@ -180,10 +201,29 @@ echo "Testing backends:"
 echo "$requested_backends"
 echo
 
-if $missing_backend || [ "$available_backends" == "" ]; 
+if $missing_backend || [ "$available_backends" == "" ];
 then
     echo "Abort due to missing backend configuration."
-    exit 1 
+    exit 1
+fi
+
+echo "============================="
+echo "==   License Compliance   =="
+echo "============================="
+
+# GMP and MPFR are redistributed with CUDA-Q under the LGPL v3; verify the
+# properties the redistribution relies on (license texts shipped, dynamic
+# linking only, libraries replaceable).
+let "samples+=1"
+if [ -f "$this_file_dir/validate_license_compliance.sh" ]; then
+    if bash "$this_file_dir/validate_license_compliance.sh"; then
+        let "passed+=1"
+    else
+        let "failed+=1"
+    fi
+else
+    echo -e "\e[01;31mError: validate_license_compliance.sh not found in $this_file_dir.\e[0m" >&2
+    let "failed+=1"
 fi
 
 # Long-running tests
@@ -199,9 +239,12 @@ echo "============================="
 echo "==        C++ Tests        =="
 echo "============================="
 
+# Plugin sources are libraries or test infrastructure rather than standalone
+# examples; each plugin validates them through its dedicated test target.
 # Note: piping the `find` results through `sort` guarantees repeatable ordering.
 tmpFile=$(mktemp)
-for ex in `find examples/ applications/ targets/ -name '*.cpp' | sort`;
+for ex in `find examples/ applications/ targets/ -name '*.cpp' \
+    -not -path '*/mpi/*' -not -path '*/plugins/*' | sort`;
 do
     filename=$(basename -- "$ex")
     filename="${filename%.*}"
@@ -209,18 +252,13 @@ do
     echo "Source: $ex"
     let "samples+=1"
 
-    # Look for a --target flag to nvq++ in the 
+    # Look for a --target flag to nvq++ in the
     # comment block at the beginning of the file.
     # Note: using sed instead of grep -P for macOS compatibility
     intended_target=$(sed -e '/^$/,$d' "$ex" | sed -n 's|^//[[:space:]]*nvq++.*--target[[:space:]]\{1,\}\([^[:space:]]\{1,\}\).*|\1|p' | head -1)
     if [ -n "$intended_target" ]; then
         echo "Intended for execution on $intended_target backend."
     fi
-    use_library_mode=$(sed -e '/^$/,$d' "$ex" | grep -o '^//[[:space:]]*nvq++.*-library-mode' | head -1)
-    if [ -n "$use_library_mode" ]; then
-        nvqpp_extra_options="--library-mode"
-    fi
-
     for t in $requested_backends
     do
         # Skipping dynamics examples if target is not dynamics and ex is dynamics
@@ -255,28 +293,6 @@ do
             echo "Skipping $t target."
             echo ":white_flag: $filename: Issue https://github.com/NVIDIA/cuda-quantum/issues/884. Test skipped." >> "${tmpFile}_$(echo $t | tr - _)"
             continue
-
-        elif [ "$t" == "remote-mqpu" ]; then
-
-            # Skipped long-running tests (variational optimization loops) for the "remote-mqpu" target to keep CI runtime manageable.
-            # A simplified test for these use cases is included in the 'test/Remote-Sim/' test suite. 
-            # Skipped tests that require passing kernel callables to entry-point kernels for the "remote-mqpu" target.
-            # Also see issue: https://github.com/NVIDIA/cuda-quantum/issues/3792
-            if [[ "$ex" == *"vqe_h2"* || "$ex" == *"qaoa_maxcut"* || "$ex" == *"gradients"* || "$ex" == *"grover"* || "$ex" == *"phase_estimation"* || "$ex" == *"trotter_kernel_mode"* || "$ex" == *"builder.cpp"* || "$ex" == *"iterative_qpe"* || "$ex" == *"measuring_kernels"* ]];
-            then
-                let "skipped+=1"
-                echo "Skipping $t target.";
-                echo ":white_flag: $filename: Not executed for performance reasons. Test skipped." >> "${tmpFile}_$(echo $t | tr - _)"
-                continue
-
-            # Don't run remote-mqpu if the MPI installation is incomplete (e.g., missing an ssh-client).            
-            elif [[ "$mpi_available" == true && "$ssh_available" == false ]];
-            then
-                let "skipped+=1"
-                echo "Skipping $t target due to incomplete MPI installation.";
-                echo ":white_flag: $filename: Incomplete MPI installation. Test skipped." >> "${tmpFile}_$(echo $t | tr - _)"
-                continue
-            fi
         fi
 
         echo "Testing on $t target..."
@@ -340,6 +356,85 @@ do
     echo "============================="
 done
 
+# Run MPI C++ examples (requires MPI and at least 4 GPUs)
+if ! $mpi_available; then
+    echo "Skipping MPI C++ examples: MPI not available."
+else
+    gpu_count=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | wc -l)
+    if [ "$gpu_count" -lt 4 ]; then
+        echo "Skipping MPI C++ examples: found $gpu_count GPU(s), need at least 4."
+    else
+        echo "Running MPI C++ examples with $gpu_count GPUs."
+        for mpi_ex in $(find examples/cpp/mpi -name '*.cpp' | sort); do
+            filename=$(basename -- "$mpi_ex")
+            filename="${filename%.*}"
+            let "samples+=1"
+            echo "Testing $filename (MPI C++):"
+            echo "Source: $mpi_ex"
+            intended_target=$(sed -n 's|^//[[:space:]]*nvq++.*--target[[:space:]]\{1,\}\([^[:space:]]\{1,\}\).*|\1|p' "$mpi_ex" | head -1)
+            if [ -n "$intended_target" ]; then
+                target_flag="--target $intended_target"
+            else
+                target_flag=""
+            fi
+            mpi_link_flags=""
+            if grep -q '#include <mpi.h>' "$mpi_ex"; then
+                mpi_link_flags="-I$(mpicc -showme:incdirs) -L$(mpicc -showme:libdirs) -lmpi"
+            fi
+            nvq++ $mpi_ex $target_flag $mpi_link_flags
+            if [ ! $? -eq 0 ]; then
+                let "failed+=1"
+                echo ":x: Compilation failed for $filename." >> "${tmpFile}"
+                echo "============================="
+                continue
+            fi
+            mpiexec --allow-run-as-root -np 4 ./a.out &> /tmp/cudaq_validation.out
+            status=$?
+            echo "Exited with code $status"
+            if [ "$status" -eq "0" ]; then
+                let "passed+=1"
+                echo ":white_check_mark: Successfully ran $filename." >> "${tmpFile}"
+            else
+                cat /tmp/cudaq_validation.out
+                let "failed+=1"
+                echo ":x: Failed to execute $filename." >> "${tmpFile}"
+            fi
+            rm -f a.out /tmp/cudaq_validation.out
+            echo "============================="
+        done
+    fi
+fi
+
+echo "============================="
+echo "== CMake Integration Test  =="
+echo "============================="
+
+# Locate the standalone CMake find_package test script.
+this_script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cmake_test_script="$this_script_dir/test_cmake_find_package.sh"
+if [ ! -f "$cmake_test_script" ] && [ -n "${repo_root:-}" ]; then
+    cmake_test_script="$repo_root/scripts/test_cmake_find_package.sh"
+fi
+
+if [ ! -f "$cmake_test_script" ]; then
+    let "skipped+=1"
+    echo "test_cmake_find_package.sh not found; skipping CMake integration test."
+    echo ":white_flag: CMake integration test skipped (script not found)." >> "${tmpFile}"
+elif ! command -v cmake &>/dev/null || ! command -v make &>/dev/null; then
+    let "skipped+=1"
+    echo "cmake or make not found; skipping CMake integration test."
+    echo ":white_flag: CMake integration test skipped (cmake/make not available)." >> "${tmpFile}"
+else
+    let "samples+=1"
+    if bash "$cmake_test_script"; then
+        let "passed+=1"
+        echo ":white_check_mark: CMake find_package(CUDAQ) integration test." >> "${tmpFile}"
+    else
+        let "failed+=1"
+        echo ":x: CMake find_package(CUDAQ) integration test." >> "${tmpFile}"
+    fi
+fi
+
 echo "============================="
 echo "==      Python Tests       =="
 echo "============================="
@@ -362,8 +457,11 @@ dynamics_backend_skipped_examples=(\
 # purposes of the container validation. The divisive_clustering_src Python
 # files are used by the Divisive_clustering.ipynb notebook, so they are tested
 # elsewhere and should be excluded from this test.
+# Plugin Python files are packaging or test infrastructure and are validated by
+# each plugin's dedicated test target.
 # Note: piping the `find` results through `sort` guarantees repeatable ordering.
-for ex in `find examples/ targets/ -name '*.py' | sort`;
+for ex in `find examples/ targets/ -name '*.py' \
+    -not -path '*/mpi/*' -not -path '*/plugins/*' | sort`;
 do 
     filename=$(basename -- "$ex")
     filename="${filename%.*}"
@@ -416,6 +514,46 @@ do
     echo "============================="
 done
 
+# Run MPI examples (requires MPI and at least 4 GPUs)
+if ! $mpi_available; then
+    echo "Skipping MPI examples: MPI not available."
+else
+    gpu_count=$(nvidia-smi --query-gpu=name --format=csv,noheader 2>/dev/null | wc -l)
+    if [ "$gpu_count" -lt 4 ]; then
+        echo "Skipping MPI examples: found $gpu_count GPU(s), need at least 4."
+    else
+        echo "Running MPI examples with $gpu_count GPUs."
+        has_mpi4py=false
+        if python3 -c "import mpi4py" 2>/dev/null; then
+            has_mpi4py=true
+        fi
+        for mpi_ex in $(find examples/python/mpi -name '*.py' | sort); do
+            filename=$(basename -- "$mpi_ex")
+            filename="${filename%.*}"
+            let "samples+=1"
+            echo "Testing $filename (MPI):"
+            echo "Source: $mpi_ex"
+            if grep -q "import mpi4py" "$mpi_ex" && ! $has_mpi4py; then
+                echo "Skipping: requires mpi4py."
+                let "skipped+=1"
+                echo ":white_flag: $filename: mpi4py not installed. Test skipped." >> "${tmpFile}"
+                continue
+            fi
+            mpiexec --allow-run-as-root -np 4 python3 "$mpi_ex" 1> /dev/null
+            status=$?
+            echo "Exited with code $status"
+            if [ "$status" -eq "0" ]; then
+                let "passed+=1"
+                echo ":white_check_mark: Successfully ran $filename." >> "${tmpFile}"
+            else
+                let "failed+=1"
+                echo ":x: Failed to run $filename." >> "${tmpFile}"
+            fi
+            echo "============================="
+        done
+    fi
+fi
+
 if [ -n "$(find examples/ applications/ -name '*.ipynb')" ]; then
     let "samples+=1"
     echo "============================="
@@ -432,8 +570,20 @@ if [ -n "$(find examples/ applications/ -name '*.ipynb')" ]; then
     echo "Installing Jupyter kernel infrastructure..."
     # Only install what's needed to register the kernel
     pip install --upgrade pip -q
-    pip install jupyter ipykernel notebook -q
-    
+    notebook_requirements="$this_script_dir/../requirements.txt"
+    if [ -f "$notebook_requirements" ]; then
+        pip install jupyter ipykernel -r "$notebook_requirements" -q
+    else
+        pip install jupyter ipykernel notebook -q
+    fi
+
+    # skqd.ipynb imports mpi4py, which is not shipped in the image.
+    if [ -n "$MPI_ROOT" ] && ! python3 -c "import mpi4py" 2>/dev/null; then
+        echo "Installing mpi4py for notebooks that require it..."
+        pip install "mpi4py~=4.1" -q \
+            || echo "Warning: could not install mpi4py; notebooks importing it will fail."
+    fi
+
     # Register the venv as a Jupyter kernel
     # Notebooks will execute in this environment and can install their own packages
     JUPYTER_KERNEL_NAME="cudaq_nb_validation_container"

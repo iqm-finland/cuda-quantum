@@ -10,7 +10,7 @@ import cudaq, pytest
 
 
 @pytest.fixture(autouse=True)
-def do_something():
+def run_and_clear_registries():
     yield
     cudaq.__clearKernelRegistries()
 
@@ -41,7 +41,7 @@ def testSynthTwoArgs():
 
     from typing import Callable
 
-    @cudaq.kernel
+    @cudaq.kernel(disable_quantum_optimization=True)
     def kernel22(k: Callable[[cudaq.qview], None], j: Callable[[cudaq.qview],
                                                                None]):
         q = cudaq.qvector(2)
@@ -62,7 +62,7 @@ def testSynthTwoArgs():
     kb = ka.merge_kernel(kernel22)
 
     counts = cudaq.sample(kb, callee0, callee1)
-    counts.dump()
+    print(counts)
     assert '00' in counts and len(counts) == 1
 
 
@@ -71,7 +71,7 @@ def test_cpp_kernel_from_python_0():
 
     from cudaq_test_cpp_algo import qstd
 
-    @cudaq.kernel
+    @cudaq.kernel(disable_quantum_optimization=True)
     def callQftAndAnother():
         q = cudaq.qvector(4)
         qstd.qft(q)
@@ -81,14 +81,14 @@ def test_cpp_kernel_from_python_0():
     callQftAndAnother()
 
     counts = cudaq.sample(callQftAndAnother)
-    counts.dump()
+    print(counts)
     assert len(counts) == 1 and '0010' in counts
 
     # TODO: currently not supported;
     # support and test this instead
     with pytest.raises(RuntimeError) as e:
 
-        @cudaq.kernel
+        @cudaq.kernel(disable_quantum_optimization=True)
         def callQftAndAnother(withAdj: bool):
             q = cudaq.qvector(4)
             qstd.qft(q)
@@ -111,7 +111,7 @@ def test_cpp_kernel_from_python_1():
 
     import cudaq_test_cpp_algo
 
-    @cudaq.kernel
+    @cudaq.kernel(disable_quantum_optimization=True)
     def callQftAndAnother():
         q = cudaq.qvector(4)
         cudaq_test_cpp_algo.qstd.qft(q)
@@ -121,14 +121,14 @@ def test_cpp_kernel_from_python_1():
     callQftAndAnother()
 
     counts = cudaq.sample(callQftAndAnother)
-    counts.dump()
+    print(counts)
     assert len(counts) == 1 and '0010' in counts
 
     # TODO: currently not supported;
     # support and test this instead
     with pytest.raises(RuntimeError) as e:
 
-        @cudaq.kernel
+        @cudaq.kernel(disable_quantum_optimization=True)
         def callQftAndAnother(withAdj: bool):
             q = cudaq.qvector(4)
             cudaq_test_cpp_algo.qstd.qft(q)
@@ -169,13 +169,55 @@ def test_cpp_kernel_from_python_2():
                 x(c)
             cudaq.control(cudaq_test_cpp_algo.qstd.uccsd, c, q, 2)
 
-        counts = cudaq.sample(callQftAndAnother, False)
+        counts = cudaq.sample(callUCCSD, False)
         assert len(counts) == 1 and '0000' in counts
-        counts = cudaq.sample(callQftAndAnother, True)
+        counts = cudaq.sample(callUCCSD, True)
         assert len(counts) > 1
 
     assert "calling cudaq.control or cudaq.adjoint on a kernel defined in C++ is not currently supported" in str(
         e.value)
+
+
+def test_cpp_kernel_from_python_3():
+    pytest.importorskip('cudaq_test_cpp_algo')
+
+    import cudaq_test_cpp_algo
+
+    @cudaq.kernel
+    def call_c_twice():
+        q = cudaq.qvector(4)
+        cudaq_test_cpp_algo.qstd.uccsd(q, 2)
+        cudaq_test_cpp_algo.qstd.uccsd(q, 2)
+
+    @cudaq.kernel
+    def call_call_c_twice():
+        call_c_twice()
+
+    call_call_c_twice()
+
+
+def test_cpp_kernel_from_python_4():
+    """Regression test for issue #2348."""
+    pytest.importorskip('cudaq_test_cpp_algo')
+
+    import qlib
+
+    # Sanity checks
+    print(qlib.qstd.qft)
+    print(qlib.qstd.another)
+
+    @cudaq.kernel(disable_quantum_optimization=True)
+    def callQftAndAnother():
+        q = cudaq.qvector(4)
+        qlib.qstd.qft(q)
+        h(q)
+        qlib.qstd.another(q, 2)
+
+    callQftAndAnother()
+
+    counts = cudaq.sample(callQftAndAnother)
+    print(counts)
+    assert len(counts) == 1 and '0010' in counts
 
 
 def test_callbacks():
@@ -255,3 +297,110 @@ def test_callback_with_capture_quantum_and_classical():
         h(qs)
 
     cudaq_test_cpp_algo.run3(entry)
+
+
+def test_callback_with_return():
+    pytest.importorskip('cudaq_test_cpp_algo')
+
+    import cudaq_test_cpp_algo
+
+    @cudaq.kernel
+    def entry(qs: cudaq.qview, i: int) -> int:
+        h(qs)
+        x(qs[i])
+        y(qs)
+        h(qs)
+        return i
+
+    cudaq_test_cpp_algo.run4(entry)
+
+
+def test_callback_with_callable():
+    pytest.importorskip('cudaq_test_cpp_algo')
+
+    import cudaq_test_cpp_algo
+
+    @cudaq.kernel
+    def foo(qs: cudaq.qview):
+        x(qs)
+
+    @cudaq.kernel
+    def entry(qs: cudaq.qview, i: int) -> int:
+        h(qs)
+        x(qs[i])
+        foo(qs)
+        h(qs)
+        return i
+
+    cudaq_test_cpp_algo.run4(entry)
+
+
+def test_py_kernel_from_cpp_with_returns():
+    pytest.importorskip('cudaq_test_cpp_algo')
+
+    import cudaq_test_cpp_algo
+
+    @cudaq.kernel
+    def foo() -> list[float]:
+        return [1.0, 2.0, 3.0]
+
+    cudaq_test_cpp_algo.run5(foo)
+
+    @cudaq.kernel
+    def foo(i: int) -> list[float]:
+        if i % 2 == 1:
+            f = 1.0
+        else:
+            f = 0.5
+        return [f, 2.0, 3.0]
+
+    cudaq_test_cpp_algo.run6(foo)
+
+
+def test_measure_handles_survive_python_callback():
+    pytest.importorskip('cudaq_test_cpp_algo')
+
+    import cudaq_test_cpp_algo
+
+    @cudaq.kernel
+    def measure(qs: cudaq.qview) -> list[cudaq.measure_handle]:
+        return mz(qs)
+
+    dem, m2d_rows, num_measurements = \
+        cudaq_test_cpp_algo.run_measure_handle_callback(measure)
+    assert dem.strip() == 'detector D0'
+    assert m2d_rows == [[0]]
+    assert num_measurements == 2
+
+
+def test_measure_handle_created_before_python_callback_survives():
+    pytest.importorskip('cudaq_test_cpp_algo')
+
+    import cudaq_test_cpp_algo
+
+    @cudaq.kernel(disable_quantum_optimization=True)
+    def callback(qs: cudaq.qview):
+        x(qs)
+
+    assert cudaq_test_cpp_algo.run_measure_handle_lifetime(callback)
+
+
+def test_cpp_kernel_from_builder_apply_call():
+    """Test that a kernel builder can call a decorator that itself calls C++ kernels."""
+    pytest.importorskip('cudaq_test_cpp_algo')
+
+    from cudaq_test_cpp_algo import qstd
+
+    @cudaq.kernel(defer_compilation=False, disable_quantum_optimization=True)
+    def cppCaller():
+        q = cudaq.qvector(4)
+        qstd.qft(q)
+        h(q)
+        qstd.another(q, 2)
+
+    kernel = cudaq.make_kernel()
+    kernel.apply_call(cppCaller)
+
+    counts = cudaq.sample(kernel)
+    print(counts)
+    assert len(counts) == 1 and '0010' in counts

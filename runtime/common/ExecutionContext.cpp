@@ -7,15 +7,15 @@
  ******************************************************************************/
 
 #include "ExecutionContext.h"
+#include <cstdlib>
+#include <cstring>
+#include <exception>
+#include <string>
 
 namespace {
 /// @brief Thread-local storage for the current execution context.
 thread_local cudaq::ExecutionContext *currentExecutionContext = nullptr;
 } // namespace
-
-namespace nvqir {
-bool isUsingResourceCounterSimulator();
-} // namespace nvqir
 
 namespace cudaq {
 
@@ -40,9 +40,18 @@ bool isLastBatch() {
 std::size_t getCurrentQpuId() {
   return currentExecutionContext ? currentExecutionContext->qpuId : 0;
 }
+
 void detail::setExecutionContext(ExecutionContext *ctx) {
   currentExecutionContext = ctx;
 }
+
 void detail::resetExecutionContext() { currentExecutionContext = nullptr; }
 
+void rethrowDeferredKernelException() {
+  if (auto *ctx = getExecutionContext(); ctx && ctx->deferredKernelException) {
+    auto deferred = ctx->deferredKernelException;
+    ctx->deferredKernelException = nullptr;
+    std::rethrow_exception(deferred);
+  }
+}
 } // namespace cudaq

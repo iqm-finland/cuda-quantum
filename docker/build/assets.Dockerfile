@@ -16,6 +16,11 @@
 
 # [Operating System]
 ARG base_image=amd64/almalinux:8
+
+# Default empty stage for ccache data. CI overrides this with
+# --build-context ccache-data=<path> to inject a pre-populated cache.
+FROM scratch AS ccache-data
+
 FROM ${base_image} AS prereqs
 SHELL ["/bin/bash", "-c"]
 ARG cuda_version=12.6
@@ -35,7 +40,8 @@ ARG PYTHON=python3.11
 RUN dnf install -y --nobest --setopt=install_weak_deps=False ${PYTHON}
 
 # [Build Dependencies]
-RUN dnf install -y --nobest --setopt=install_weak_deps=False wget git unzip
+RUN dnf install -y --nobest --setopt=install_weak_deps=False wget git unzip epel-release && \
+    dnf install -y --nobest --setopt=install_weak_deps=False ccache
 
 ## [CUDA]
 RUN source /cuda-quantum/scripts/configure_build.sh install-cuda
@@ -50,8 +56,8 @@ ADD scripts/build_llvm.sh /cuda-quantum/scripts/build_llvm.sh
 ADD cmake/caches/LLVM.cmake /cuda-quantum/cmake/caches/LLVM.cmake
 ADD tpls/customizations/llvm /cuda-quantum/tpls/customizations/llvm
 ADD .gitmodules /cuda-quantum/.gitmodules
-ADD .git/modules/tpls/pybind11/HEAD /.git_modules/tpls/pybind11/HEAD
 ADD .git/modules/tpls/llvm/HEAD /.git_modules/tpls/llvm/HEAD
+ADD .git/modules/tpls/nanobind/HEAD /.git_modules/tpls/nanobind/HEAD
 
 # This is a hack so that we do not need to rebuild the prerequisites 
 # whenever we pick up a new CUDA-Q commit (which is always in CI).
@@ -66,8 +72,8 @@ RUN cd /cuda-quantum && git init && \
         fi; \
     done && git submodule init && git submodule
 RUN cd /cuda-quantum && source scripts/configure_build.sh && \
-    LLVM_PROJECTS='clang;flang;lld;mlir;openmp;runtimes' \
-    bash scripts/install_prerequisites.sh -t llvm
+    LLVM_PROJECTS='clang;flang;lld;mlir;openmp;runtimes' BOOTSTRAP_LLVM=true \
+    bash scripts/install_prerequisites.sh -t llvm -e qrmi
 
 # Validate that the built toolchain and libraries have no GCC dependencies.
 RUN source /cuda-quantum/scripts/configure_build.sh && \
@@ -98,27 +104,44 @@ ADD "docs/sphinx/examples" /cuda-quantum/docs/sphinx/examples
 ADD "docs/sphinx/applications" /cuda-quantum/docs/sphinx/applications
 ADD "docs/sphinx/targets" /cuda-quantum/docs/sphinx/targets
 ADD "docs/sphinx/snippets" /cuda-quantum/docs/sphinx/snippets
-ADD "include" /cuda-quantum/include
-ADD "lib" /cuda-quantum/lib
+ADD "cudaq" /cuda-quantum/cudaq
+ADD "realtime" /cuda-quantum/realtime
 ADD "runtime" /cuda-quantum/runtime
 ADD "scripts/build_cudaq.sh" /cuda-quantum/scripts/build_cudaq.sh
 ADD "scripts/migrate_assets.sh" /cuda-quantum/scripts/migrate_assets.sh
 ADD "scripts/cudaq_set_env.sh" /cuda-quantum/scripts/cudaq_set_env.sh
 ADD "scripts/build_installer.sh" /cuda-quantum/scripts/build_installer.sh
 ADD "scripts/set_env_defaults.sh" /cuda-quantum/scripts/set_env_defaults.sh
+ADD "scripts/check_mlir_symbols.sh" /cuda-quantum/scripts/check_mlir_symbols.sh
 ADD "targettests" /cuda-quantum/targettests
-ADD "test" /cuda-quantum/test
-ADD "tools" /cuda-quantum/tools
 ADD "tpls/customizations" /cuda-quantum/tpls/customizations
 ADD "tpls/json" /cuda-quantum/tpls/json
 ADD "unittests" /cuda-quantum/unittests
 ADD "utils" /cuda-quantum/utils
 ADD "CMakeLists.txt" /cuda-quantum/CMakeLists.txt
 ADD "LICENSE" /cuda-quantum/LICENSE
+ADD "LICENSES" /cuda-quantum/LICENSES
 ADD "NOTICE" /cuda-quantum/NOTICE
 
 ARG release_version=
 ENV CUDA_QUANTUM_VERSION=$release_version
+
+ENV CCACHE_DIR=/root/.ccache
+ENV CCACHE_BASEDIR=/cuda-quantum
+ENV CCACHE_SLOPPINESS=include_file_mtime,include_file_ctime,time_macros,pch_defines
+ENV CCACHE_COMPILERCHECK=content
+ENV CCACHE_LOGFILE=/root/.ccache/ccache.log
+RUN --mount=from=ccache-data,target=/tmp/ccache-import,rw \
+    if [ -d /tmp/ccache-import ] && [ "$(ls -A /tmp/ccache-import 2>/dev/null)" ]; then \
+        echo "Importing ccache data..." && \
+        mkdir -p /root/.ccache && cp -a /tmp/ccache-import/. /root/.ccache/ && \
+        ccache -s 2>/dev/null || true && \
+        ccache -z 2>/dev/null || true && \
+        find /root/.ccache -type f | wc -l | tr -d ' ' > /root/.ccache/_restore_file_count.txt; \
+    else \
+        echo "No ccache data injected using empty scratch stage." && \
+        mkdir -p /root/.ccache; \
+    fi
 
 # Note: We statically link libc++ here to make it easy to build shared CUDA-Q libraries with nvq++
 # that can then be linked to and called from other C++ code compiled with a different toolchain
@@ -129,12 +152,17 @@ RUN cd /cuda-quantum && source scripts/configure_build.sh && \
     # Make sure that the variables and arguments configured here match
     # the ones in the install_prerequisites.sh invocation in the prereqs stage!
     ## [>CUDAQuantumCppBuild]
-    CUDAQ_ENABLE_STATIC_LINKING=TRUE \
+    CUDAQ_STATIC_CXX_RUNTIME=TRUE \
+    CUDAQ_STATIC_DEPS=TRUE \
     CUDAQ_REQUIRE_OPENMP=TRUE \
     CUDAQ_WERROR=TRUE \
     CUDAQ_PYTHON_SUPPORT=OFF \
     LLVM_PROJECTS='clang;flang;lld;mlir;openmp;runtimes' \
-    bash scripts/build_cudaq.sh -t llvm -v
+    bash scripts/build_cudaq.sh -t llvm -v -- \
+        "-DCUDAQ_ENABLE_PROJECTS=cudaq;runtime;realtime" \
+        -DCUDAQ_ENABLE_PASQAL_QRMI_CONNECTOR=OFF && \
+    echo "=== ccache stats (cpp_build) ===" && (ccache -s 2>/dev/null || true) && \
+    (ccache --print-stats 2>/dev/null || ccache -s 2>/dev/null) > /root/.ccache/_build_stats.txt
     ## [<CUDAQuantumCppBuild]
 
 # Validate that the nvidia backend was built.
@@ -143,6 +171,36 @@ RUN source /cuda-quantum/scripts/configure_build.sh && \
         echo -e "\e[01;31mError: Missing nvidia backend.\e[0m" >&2; \
         exit 1; \
     fi
+
+# Validate that the realtime integration and its CUDA-Q device-call consumers
+# were built and installed. The GPU test is compile-only in this CPU-runner
+# pipeline; the no-GPU host-dispatch tests run in the cpp_tests stage below.
+RUN source /cuda-quantum/scripts/configure_build.sh && \
+    for artifact in \
+        include/cudaq/realtime.h \
+        lib/libcudaq-realtime.so \
+        lib/libcudaq-realtime-dispatch.a \
+        lib/libcudaq-realtime-host-dispatch.a \
+        lib/libcudaq-realtime-udp-transport.a \
+        lib/libcudaq-device-call-runtime.so \
+        lib/cmake/cudaq-realtime/cudaq-realtime-config.cmake \
+        realtime/LICENSE \
+        realtime/NOTICE; \
+    do \
+        if [ ! -e "$CUDAQ_INSTALL_PREFIX/$artifact" ]; then \
+            echo -e "\e[01;31mError: Missing realtime artifact: $artifact.\e[0m" >&2; \
+            exit 1; \
+        fi; \
+    done && \
+    for executable in \
+        /cuda-quantum/build/unittests/test_device_call_dispatch \
+        /cuda-quantum/build/unittests/test_host_dispatch_no_gpu; \
+    do \
+        if [ ! -x "$executable" ]; then \
+            echo -e "\e[01;31mError: Missing realtime test executable: $executable.\e[0m" >&2; \
+            exit 1; \
+        fi; \
+    done
 
 # Validate that the built toolchain and libraries have no GCC dependencies.
 RUN source /cuda-quantum/scripts/configure_build.sh && \
@@ -153,7 +211,7 @@ RUN source /cuda-quantum/scripts/configure_build.sh && \
         libname="$(basename "$binary")" && \
         # Linking cublas dynamically necessarily adds a libgcc_s dependency to the GPU-based simulators.
         # The same holds for a range of CUDA libraries, whereas libcudart.so does not have any GCC dependencies.
-        if [ "${libname#libnvqir-custatevec}" != "$libname" ] || [ "${libname#libnvqir-tensornet}" != "$libname" ] || [ "${libname#libnvqir-dynamics}" != "$libname" ]; then \
+        if [ "${libname#libnvqir-custatevec}" != "$libname" ] || [ "${libname#libnvqir-nvidia-mgpu}" != "$libname" ] || [ "${libname#libnvqir-tensornet}" != "$libname" ] || [ "${libname#libnvqir-dynamics}" != "$libname" ]; then \
             echo "Skipping validation of $libname."; \
         elif [ -n "$(ldd "${binary}" 2>/dev/null | grep gcc)" ]; then \
             has_gcc_dependencies=true && \
@@ -171,25 +229,40 @@ FROM prereqs AS python_build
 ADD pyproject.toml.cu* /cuda-quantum/
 ADD "python" /cuda-quantum/python
 ADD "cmake" /cuda-quantum/cmake
-ADD "include" /cuda-quantum/include
-ADD "lib" /cuda-quantum/lib
+ADD "cudaq" /cuda-quantum/cudaq
 ADD "runtime" /cuda-quantum/runtime
-ADD "tools" /cuda-quantum/tools
 ADD "tpls/customizations" /cuda-quantum/tpls/customizations
 ADD "tpls/json" /cuda-quantum/tpls/json
 ADD "utils" /cuda-quantum/utils
+ADD "scripts/check_mlir_symbols.sh" /cuda-quantum/scripts/check_mlir_symbols.sh
 ADD "CMakeLists.txt" /cuda-quantum/CMakeLists.txt
 ADD "LICENSE" /cuda-quantum/LICENSE
+ADD "LICENSES" /cuda-quantum/LICENSES
 ADD "NOTICE" /cuda-quantum/NOTICE
 ADD "CITATION.cff" /cuda-quantum/CITATION.cff
 
 ARG release_version=
 ENV SETUPTOOLS_SCM_PRETEND_VERSION=$release_version
 
+ENV CCACHE_DIR=/root/.ccache
+ENV CCACHE_BASEDIR=/cuda-quantum
+ENV CCACHE_SLOPPINESS=include_file_mtime,include_file_ctime,time_macros,pch_defines
+ENV CCACHE_COMPILERCHECK=content
+ENV CCACHE_LOGFILE=/root/.ccache/ccache.log
+RUN --mount=from=ccache-data,target=/tmp/ccache-import,rw \
+    if [ -d /tmp/ccache-import ] && [ "$(ls -A /tmp/ccache-import 2>/dev/null)" ]; then \
+        echo "Importing ccache data (python_build)..." && \
+        mkdir -p /root/.ccache && cp -a /tmp/ccache-import/. /root/.ccache/ && \
+        ccache -s 2>/dev/null || true && \
+        ccache -z 2>/dev/null || true; \
+    else \
+        mkdir -p /root/.ccache; \
+    fi
+
 ARG PYTHON=python3.11
 RUN dnf install -y --nobest --setopt=install_weak_deps=False ${PYTHON}-devel && \
     ${PYTHON} -m ensurepip --upgrade && \
-    ${PYTHON} -m pip install numpy build auditwheel patchelf
+    CCACHE_DISABLE=1 ${PYTHON} -m pip install numpy build auditwheel patchelf
 
 RUN cd /cuda-quantum && \
     . scripts/configure_build.sh && \
@@ -207,11 +280,12 @@ RUN cd /cuda-quantum && \
     # the ones in the install_prerequisites.sh invocation in the prereqs stage!
     ## [>CUDAQuantumPythonBuild]
     LLVM_PROJECTS='clang;flang;lld;mlir;python-bindings;openmp;runtimes' \
-    bash scripts/install_prerequisites.sh -t llvm && \
+    bash scripts/install_prerequisites.sh -t llvm -e qrmi && \
     CC="$LLVM_INSTALL_PREFIX/bin/clang" \
     CXX="$LLVM_INSTALL_PREFIX/bin/clang++" \
-    FC="$LLVM_INSTALL_PREFIX/bin/flang-new" \
-    python3 -m build --wheel
+    FC="$LLVM_INSTALL_PREFIX/bin/flang" \
+    python3 -m build --wheel && \
+    echo "=== ccache stats (python_build) ===" && (ccache -s 2>/dev/null || true)
     ## [<CUDAQuantumPythonBuild]
 
 # The '[a-z]*linux_[^\.]*' is meant to catch things like:
@@ -271,7 +345,7 @@ RUN gcc_packages=$(dnf list installed "gcc*" | sed '/Installed Packages/d' | cut
 RUN cd /cuda-quantum && source scripts/configure_build.sh && \
     python3 -m pip install lit pytest scipy && \
     "${LLVM_INSTALL_PREFIX}/bin/llvm-lit" -v _skbuild/python/tests/mlir \
-        --param nvqpp_site_config=_skbuild/python/tests/mlir/lit.site.cfg.py
+        --param cudaq_site_config=_skbuild/python/tests/mlir/lit.site.cfg.py
 # The other tests for the Python wheel are run post-installation.
 
 ## [C++ Tests]
@@ -286,9 +360,10 @@ RUN if [ ! -x "$(command -v nvidia-smi)" ] || [ -z "$(nvidia-smi | egrep -o "CUD
         # Removing gcc packages remove the CUDA toolkit since it depends on them
         source /cuda-quantum/scripts/configure_build.sh install-cudart; \
     fi && cd /cuda-quantum && \
+    # Exclude lit test suites from ctest. They are run individually above/below.
     # FIXME: Tensor unit tests for runtime errors throw a different exception.
     # Issue: https://github.com/NVIDIA/cuda-quantum/issues/2321
-    excludes+=" --exclude-regex ctest-nvqpp|ctest-targettests|Tensor.*Error" && \
+    excludes+=" --exclude-regex ctest-cudaq|ctest-targettests|pycudaq-mlir|Tensor.*Error" && \
     ctest --output-on-failure --test-dir build $excludes
 
 ENV PATH="${PATH}:/usr/local/cuda/bin" 
@@ -309,8 +384,8 @@ RUN cd /cuda-quantum && source scripts/configure_build.sh && \
         filtered=" --filter-out MixedLanguage/cuda-1"; \
 	filtered+="|AST-Quake/calling_convention|test_argument_conversion"; \
     fi && \
-    "$LLVM_INSTALL_PREFIX/bin/llvm-lit" -v build/test \
-        --param nvqpp_site_config=build/test/lit.site.cfg.py ${filtered} && \
+    "$LLVM_INSTALL_PREFIX/bin/llvm-lit" -v build/cudaq/test \
+        --param cudaq_site_config=build/cudaq/test/lit.site.cfg.py ${filtered} && \
     # FIXME: Some tests are still failing when building against libc++
     # tracked in https://github.com/NVIDIA/cuda-quantum/issues/1712
     filtered=" --filter-out Kernel/inline-qpu-func|execution/vector_bool_parameters" && \
@@ -318,7 +393,17 @@ RUN cd /cuda-quantum && source scripts/configure_build.sh && \
         filtered+="|TargetConfig/check_compile"; \
     fi && \
     "$LLVM_INSTALL_PREFIX/bin/llvm-lit" -v build/targettests \
-        --param nvqpp_site_config=build/targettests/lit.site.cfg.py ${filtered}
+        --param cudaq_site_config=build/targettests/lit.site.cfg.py ${filtered}
+
+# Export ccache data so CI can extract it for persistence.
+# Tar inside the container to export a single file instead of thousands of
+# small ccache entries (avoids slow per-file gRPC export in BuildKit).
+# Build with --target ccache-export --output type=local,dest=/tmp/ccache-export
+FROM cpp_build AS ccache-tar
+RUN tar cf /ccache.tar -C /root/.ccache .
+
+FROM scratch AS ccache-export
+COPY --from=ccache-tar /ccache.tar /
 
 FROM cpp_tests
 COPY --from=python_tests /wheelhouse /cuda-quantum/wheelhouse
@@ -336,4 +421,3 @@ RUN . /cuda-quantum/scripts/configure_build.sh install-gcc && \
         dnf install -y --nobest --setopt=install_weak_deps=False \
             libnvjitlink-$(echo ${CUDA_VERSION} | tr . -); \
     fi
-

@@ -8,18 +8,19 @@
 
 #include "py_resource_count.h"
 #include "common/Resources.h"
+#include "nvqir/resourcecounter/ResourceCounterScope.h"
 #include "runtime/cudaq/platform/py_alt_launch_kernel.h"
-#include "utils/LinkedLibraryHolder.h"
-#include "mlir/Bindings/Python/PybindAdaptors.h"
-#include <pybind11/functional.h>
-
-namespace py = pybind11;
+#include "cudaq/algorithms/estimate/policy.h"
+#include "mlir/Bindings/Python/NanobindAdaptors.h"
+#include <nanobind/stl/function.h>
+#include <nanobind/stl/optional.h>
 
 using namespace cudaq;
 
-static Resources estimate_resources_impl(
-    const std::string &kernelName, MlirModule kernelMod, MlirType returnTy,
-    std::optional<std::function<bool()>> choice, py::args args) {
+static Resources
+estimate_resources_impl(const std::string &kernelName, MlirModule kernelMod,
+                        std::optional<std::function<bool()>> choice,
+                        nanobind::args args) {
   auto &platform = cudaq::get_platform();
   args = simplifiedValidateInputArguments(args);
 
@@ -27,9 +28,6 @@ static Resources estimate_resources_impl(
   ctx.kernelName = kernelName;
   // Indicate that this is not an async exec
   ctx.asyncExec = false;
-
-  // Use the resource counter simulator
-  python::detail::switchToResourceCounterSimulator();
 
   // Set the choice function for the simulator
   if (!choice) {
@@ -40,26 +38,25 @@ static Resources estimate_resources_impl(
       return rand(gen);
     };
   }
-  python::detail::setChoiceFunction(*choice);
 
-  try {
-    platform.with_execution_context(ctx, [&]() {
-      [[maybe_unused]] auto result = cudaq::marshal_and_launch_module(
-          kernelName, kernelMod, returnTy, args);
-    });
-  } catch (...) {
-    python::detail::stopUsingResourceCounterSimulator();
-    throw;
-  }
-
-  // Save and clone counts data
-  Resources counts = *python::detail::getResourceCounts();
-  // Switch simulators back
-  python::detail::stopUsingResourceCounterSimulator();
-  return counts;
+  estimate_policy policy{
+      .kernelName = kernelName,
+      .choice = *std::move(choice),
+  };
+  auto result = detail::launch(policy, 0, ctx, platform, [&]() {
+    // Pass nullptr for the compiled slot to disable JIT-artifact caching:
+    // the resource-counter hooks are installed in the scope above and only
+    // fire while the kernel is freshly JIT-compiled. A cached binary would
+    // bypass them.
+    [[maybe_unused]] auto result =
+        cudaq::marshal_and_launch_module(kernelName, kernelMod, args);
+  });
+  return result.get_resources();
 }
 
-void cudaq::bindCountResources(py::module &mod) {
+void cudaq::bindCountResources(nanobind::module_ &mod) {
   mod.def("estimate_resources_impl", estimate_resources_impl,
+          nanobind::arg("kernel_name"), nanobind::arg("kernel_mod"),
+          nanobind::arg("choice").none(), nanobind::arg("args"),
           "See python documentation for estimate_resources.");
 }

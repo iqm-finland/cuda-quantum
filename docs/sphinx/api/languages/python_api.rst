@@ -72,10 +72,36 @@ Kernel Execution
 .. autofunction:: cudaq::draw
 .. autofunction:: cudaq::translate
 .. autofunction:: cudaq::estimate_resources
+.. autofunction:: cudaq::dem_from_kernel
+
+``cudaq.contrib``
+=============================
+
+Quantum Embeddings
+-----------------------------
+
+.. autofunction:: cudaq.contrib.amplitude_encode
+.. autofunction:: cudaq.contrib.angular_encode
+
+Quantum Error Correction
+=============================
+
+These functions are called inside an ``@cudaq.kernel`` body to declare
+detectors and logical observables for detector-error-model generation with
+``cudaq.dem_from_kernel``, and to discriminate measurement handles. They are
+intercepted by the compiler; calling them at host scope raises
+``RuntimeError``. (``cudaq.to_integer`` is likewise available inside kernels
+to pack discriminated bits into an integer.)
+
+.. autofunction:: cudaq::detector
+.. autofunction:: cudaq::detectors
+.. autofunction:: cudaq::logical_observable
+.. autofunction:: cudaq::to_bools
 
 Backend Configuration
 =============================
 
+.. autofunction:: cudaq::parse_args
 .. autofunction:: cudaq::has_target
 .. autofunction:: cudaq::get_target
 .. autofunction:: cudaq::get_targets
@@ -95,7 +121,7 @@ Backend Configuration
     it is automatically (and silently) stripped from any programs submitted to
     hardware targets.
 
-    :param error_type: A subtype of :class:`cudaq.KrausChannel` that
+    :`param` error_type: A subtype of :class:`cudaq.KrausChannel` that
         implements/defines the desired noise mechanisms as Kraus channels (e.g.
         :class:`cudaq.Depolarization2`). If you want to use a custom
         :class:`cudaq.KrausChannel` (i.e. not built-in to CUDA-Q), it must
@@ -126,7 +152,7 @@ Backend Configuration
             noise = cudaq.NoiseModel()
             noise.register_channel(CustomNoiseChannel)
 
-    :param parameters: The precise argument pack depend on the concrete
+    :`param` parameters: The precise argument pack depend on the concrete
         :class:`cudaq.KrausChannel` being used. The arguments are a concatenated
         list of parameters and targets.  For example, to apply a 2-qubit
         depolarization channel, which has `num_parameters = 1` and `num_targets =
@@ -137,7 +163,7 @@ Backend Configuration
             q, r = cudaq.qubit(), cudaq.qubit()
             cudaq.apply_noise(cudaq.Depolarization2, 0.1, q, r)
 
-    :param targets: The target qubits on which to apply the noise
+    :`param` targets: The target qubits on which to apply the noise
 
 
 .. automethod:: cudaq::initialize_cudaq
@@ -258,6 +284,8 @@ Data Types
 .. autoclass:: cudaq::qreg
 .. autoclass:: cudaq::qvector
 
+.. autoclass:: cudaq::measure_handle
+
 .. autoclass:: cudaq::ComplexMatrix
     :members:
     :special-members: __getitem__, __str__
@@ -267,6 +295,9 @@ Data Types
     :special-members: __getitem__, __len__, __iter__
 
 .. autoclass:: cudaq::AsyncSampleResult
+    :members:
+
+.. autoclass:: cudaq.DEMResult
     :members:
 
 .. autoclass:: cudaq::ObserveResult
@@ -299,8 +330,8 @@ Optimizers
 
    Run the optimization procedure.
 
-   :param dimensions: The number of parameters to optimize
-   :param function: The objective function to minimize
+   :`param` dimensions: The number of parameters to optimize
+   :`param` function: The objective function to minimize
    :returns: tuple of (optimal_value, optimal_parameters)
 
 .. py:method:: requires_gradients() -> bool
@@ -411,9 +442,88 @@ MPI Submodule
 .. automethod:: cudaq.mpi::all_gather
 .. automethod:: cudaq.mpi::broadcast
 .. automethod:: cudaq.mpi::is_initialized
+.. automethod:: cudaq.mpi::split_communicator
+.. automethod:: cudaq.mpi::set_communicator
 .. automethod:: cudaq.mpi::finalize
 
 ORCA Submodule
 =============================
 
 .. automethod:: cudaq.orca::sample
+
+PTSBE Submodule
+=============================
+
+.. _ptsbe_api:
+
+The ``cudaq.ptsbe`` submodule implements Pre-Trajectory Sampling with Batch
+Execution (PTSBE). For a conceptual overview and usage tutorial see
+:doc:`../../using/examples/ptsbe`.
+
+Sampling Functions
+-------------------
+
+.. autofunction:: cudaq.ptsbe.sample
+
+.. autofunction:: cudaq.ptsbe.sample_async
+
+----
+
+Result Type
+------------
+
+.. autoclass:: cudaq.ptsbe.PTSBESampleResult
+    :members:
+
+----
+
+Trajectory Sampling Strategies
+--------------------------------
+
+.. autoclass:: cudaq.ptsbe.PTSSamplingStrategy
+    :members:
+
+.. autoclass:: cudaq.ptsbe.ProbabilisticSamplingStrategy
+    :members:
+
+.. autoclass:: cudaq.ptsbe.OrderedSamplingStrategy
+    :members:
+
+.. autoclass:: cudaq.ptsbe.ExhaustiveSamplingStrategy
+    :members:
+
+----
+
+Shot Allocation Strategy
+-------------------------
+
+.. autoclass:: cudaq.ptsbe.ShotAllocationStrategy
+    :members:
+
+.. autoclass:: cudaq.ptsbe.ShotAllocationType
+    :members:
+
+----
+
+Execution Data
+---------------
+
+.. autoclass:: cudaq.ptsbe.PTSBEExecutionData
+    :members:
+
+.. autoclass:: cudaq.ptsbe.TraceInstruction
+    :members:
+
+.. autoclass:: cudaq.ptsbe.TraceInstructionType
+    :members:
+
+----
+
+Trajectory and Selection Types
+--------------------------------
+
+.. autoclass:: cudaq.ptsbe.KrausTrajectory
+    :members:
+
+.. autoclass:: cudaq.ptsbe.KrausSelection
+    :members:
