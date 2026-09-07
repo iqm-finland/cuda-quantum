@@ -403,7 +403,7 @@ def _simulate_circuit(instructions: list[iqm_client.Instruction],
         ms: int(np.round(np.real(prob * shots))) for ms, prob in zip(
             _generate_measurement_strings(len(measurement_qubits_positions)),
             probabilities,
-        ) if np.real(prob * shots) >= 1
+        ) # if np.real(prob * shots) >= 1  # to suppress < 1 shots occurrences
     }, measurement_keys
 
 
@@ -530,7 +530,13 @@ async def get_job_status(job_id: str, request: Request):
         "runtime_ms":
             None,
         "status":
-            "completed" if job.status == iqm_client.Status.READY else job.status
+            "completed" if job.status == iqm_client.Status.READY else job.status,
+        "message":
+            job.result.message if job.result and job.result.message else None,
+        "counts_batch":
+            job.counts_batch,
+        "metadata":
+            job.metadata,
     }
 
     if job.status == iqm_client.Status.FAILED:
@@ -542,6 +548,21 @@ async def get_job_status(job_id: str, request: Request):
         })
 
     return results
+
+
+@app.get("/api/v1/jobs/{job_id}/payload")
+async def get_job_payload(job_id: str, request: Request):
+    """Get the payload of a job"""
+
+    access_token = request.headers.get("Authorization")
+    if access_token != good_access_token:
+        raise HTTPException(401)
+
+    if job_id not in createdJobs:
+        raise HTTPException(404)
+
+    job = createdJobs[job_id]
+    return job.metadata.request
 
 
 @app.get("/api/v1/jobs/{job_id}/artifacts/measurement_counts")
@@ -556,10 +577,7 @@ async def get_job_counts(job_id: str, request: Request):
 
     job = createdJobs[job_id]
 
-    # TODO: return the actual counts, check the requested measurements
-    results = job.counts_batch
-
-    return results
+    return job.counts_batch
 
 
 @app.get("/config/qa/qpu")
@@ -603,3 +621,8 @@ async def set_qa_bad_cz_gates(loci_list: str, request: Request):
     _parse_bad_cz_gate_list(loci_list)
     _process_bad_cz_gate_list()
     return {"message": "ok"}
+
+
+def startServer(port):
+    import uvicorn
+    uvicorn.run(app, port=port, host='0.0.0.0', log_level="info")

@@ -1,15 +1,13 @@
 # ============================================================================ #
 # Copyright (c) 2022 - 2026 NVIDIA Corporation & Affiliates.                   #
 # All rights reserved.                                                         #
-# Copyright 2025 IQM Quantum Computers                                         #
+# Copyright 2025-2026 IQM Quantum Computers                                    #
 #                                                                              #
 # This source code and the accompanying materials are made available under     #
 # the terms of the Apache License 2.0 which accompanies this distribution.     #
 # ============================================================================ #
 
 import os
-import sys
-import shutil
 import tempfile
 from typing import List
 from multiprocessing import Process
@@ -20,17 +18,14 @@ import cudaq
 from cudaq import spin
 import pytest
 
-if "utils" not in sys.path:
-    sys.path.append("utils")
-
 iqm_client = pytest.importorskip("iqm.iqm_client")
 
 try:
     from utils.mock_qpu.iqm import startServer
     from utils.mock_qpu.iqm.mock_iqm_cortex_cli import write_a_mock_tokens_file
     from utils.mock_qpu import get_backend_port
-except:
-    pytest.skip("Mock qpu not available, skipping IQM tests.",
+except Exception as e:
+    pytest.skip(f"Mock qpu not available, skipping IQM tests. {e}",
                 allow_module_level=True)
 
 pytestmark = pytest.mark.xdist_group("iqm_mock")
@@ -46,12 +41,12 @@ def startUpMockServer():
     with tempfile.NamedTemporaryFile(delete=False) as tmp_tokens_file:
         write_a_mock_tokens_file(tmp_tokens_file.name)
 
-    # Launch the Mock Server
-    p = Process(target=startServer, args=("iqm",))
-    p.start()
-
     # Import port number of the mock server
     port = get_backend_port("iqm")
+
+    # Launch the Mock Server
+    p = Process(target=startServer, args=(port,))
+    p.start()
 
     if not check_server_connection(port):
         p.terminate()
@@ -364,6 +359,46 @@ def test_IQM_state_synthesis_builder():
     assert assert_close(counts["00"], 0., 2)
     assert assert_close(counts["01"], 0., 2)
     assert assert_close(counts["11"], 0., 2)
+
+
+def test_IQM_qubit_order_named_measurements():
+    shots = 1000
+    # When changing the qubit count the measurements below need to be adapted.
+    QUBIT_COUNT = 8
+
+    @cudaq.kernel
+    def circuit(qubit_pos: int):
+        qvector = cudaq.qvector(QUBIT_COUNT)
+
+        x(qvector[qubit_pos])
+
+        # In the circuit the names of the variables will be used instead of
+        # auto generated names.
+        # `result_one` is deliberately used twice to test that name conflicts
+        # are handled by the transpiler.
+        result_one = mz(qvector[0])
+        result_two = mz(qvector[1])
+        result_three = mz(qvector[2])
+        result_four = mz(qvector[3])
+        result_one = mz(qvector[4])
+        result_six = mz(qvector[5])
+        result_seven = mz(qvector[6])
+        result_eight = mz(qvector[7])
+
+    for qubit in range(QUBIT_COUNT):
+        # expect a single bit at `pos` to be 1 and the rest 0
+        expected = f"{1 << (QUBIT_COUNT - 1 - qubit):0{QUBIT_COUNT}b}"
+
+        result = cudaq.sample(circuit, qubit, shots_count=shots)
+
+        counts: dict[Any, Any] = dict(result.items())
+        most_dominant = max(counts, key=counts.get)
+
+        #print(f"Most dominant: {most_dominant} ({counts[most_dominant]} shots)"
+        #      f" / expected: {expected}"
+        #      f" {"PASS" if most_dominant == expected else "FAIL"}")
+
+        assert (most_dominant == expected)
 
 
 # leave for gdb debugging
