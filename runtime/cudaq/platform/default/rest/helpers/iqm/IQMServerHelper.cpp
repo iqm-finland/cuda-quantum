@@ -1,7 +1,6 @@
 /*******************************************************************************
  * Copyright (c) 2022 - 2026 NVIDIA Corporation & Affiliates.                  *
  * All rights reserved.                                                        *
- * Copyright 2025-2026 IQM Quantum Computers                                   *
  *                                                                             *
  * This source code and the accompanying materials are made available under    *
  * the terms of the Apache License 2.0 which accompanies this distribution.    *
@@ -848,7 +847,11 @@ std::string IQMServerHelper::writeQuantumArchitectureFile(void) {
                              quantumArchitectureFilePath + "\" - " +
                              std::string(strerror(errno)));
   }
-  ftruncate(fd, 0);
+  if (ftruncate(fd, 0)) {
+    throw std::runtime_error("Failed to truncate QPU architecture file: \"" +
+                             quantumArchitectureFilePath + "\" - " +
+                             std::string(strerror(errno)));
+  }
   // open also as FILE which allows easier formatting with fprintf()
   FILE *file = fdopen(fd, "w");
   if (file == NULL) {

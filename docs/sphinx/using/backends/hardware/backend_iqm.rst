@@ -1,7 +1,7 @@
 IQM Backend Advanced Use Cases
 ==============================
 
-On this page advanced uses cases which are supported by the IQM backend integration are described.
+This page describes advanced uses cases supported by the IQM backend integration.
 
 
 Configuring the backend
@@ -14,6 +14,7 @@ The following settings can be configured:
 - To which IQM quantum computer a job is sent by setting `IQM Server URL` plus `IQM Quantum Computer`.
 - The API token for authorization at the IQM server.
 - Different QPU architectures for testing.
+- The use of emulation mode.
 
 +-----------------------+----------------------+-----------------------------------+----------------------------+
 | Setting               | Environment          | Python                            | C++                        |
@@ -32,6 +33,8 @@ The following settings can be configured:
 +-----------------------+----------------------+-----------------------------------+----------------------------+
 | save QPU architecture | IQM_SAVE_QPU_QA      |                                   |                            |
 +-----------------------+----------------------+-----------------------------------+----------------------------+
+| Emulation mode        |                      | emulate                           | ``--emulate``              |
++-----------------------+----------------------+-----------------------------------+----------------------------+
 
 Please note that any value in an environment variable takes precedence over any value for the same setting in the code or at compile time.
 
@@ -42,11 +45,12 @@ Examples:
 
         .. code:: bash
 
-            IQM_SERVER_URL="https://resonance.meetiqm.com/" IQM_QC="garnet" python3 program.py
+            IQM_TOKEN="your personal API token" IQM_SERVER_URL="https://resonance.iqm.tech/" IQM_QC="garnet" python3 program.py
 
         .. code:: bash
 
-            export IQM_SERVER_URL="https://resonance.meetiqm.com/"
+            export IQM_TOKEN="your personal API token"
+            export IQM_SERVER_URL="https://resonance.iqm.tech/"
             export IQM_QC="garnet"
             python3 program.py
 
@@ -54,7 +58,7 @@ Examples:
 
         .. code:: python
 
-            cudaq.set_target('iqm', url="https://resonance.meetiqm.com/", qc="garnet")
+            cudaq.set_target('iqm', url="https://resonance.iqm.tech/", qc="garnet")
 
         .. code:: python
 
@@ -64,7 +68,7 @@ Examples:
 
         .. code:: bash
 
-            nvq++ --target iqm --iqm-server-url="https://resonance.meetiqm.com" --iqm-quantum-computer="garnet" src.cpp -o program
+            nvq++ --target iqm --iqm-server-url="https://resonance.iqm.tech" --iqm-quantum-computer="garnet" src.cpp -o program
 
 
 Emulation Mode
@@ -96,7 +100,7 @@ Emulation Mode
 
     .. code:: bash
 
-        IQM_SERVER_URL="https://resonance.meetiqm.com/" IQM_QC="<quantum computer>" IQM_SAVE_QPU_QA="<path+filename for QPU architecture file>" python3 program.py
+        IQM_SERVER_URL="https://resonance.iqm.tech/" IQM_QC="<quantum computer>" IQM_SAVE_QPU_QA="<path+filename for QPU architecture file>" python3 program.py
 
 
     The file will be created with the given name. If the file already exists the execution is aborted with an error.
@@ -110,7 +114,7 @@ Emulation Mode
     .. code:: bash
 
         nvq++ --target iqm --emulate src.cpp -o program
-        IQM_SERVER_URL="https://resonance.meetiqm.com/" IQM_QC="<quantum computer>" ./program
+        IQM_SERVER_URL="https://resonance.iqm.tech/" IQM_QC="<quantum computer>" ./program
 
     Emulation mode will still contact the configured IQM Server to retrieve the dynamic quantum architecture resulting from the active calibration unless a QPU architecture file is explicitly specified.
     This can be done by specifying a file with the architecture either at compile time or in an variable in the environment executing the binary.
@@ -138,7 +142,7 @@ Emulation Mode
     .. code:: bash
 
         nvq++ --target iqm --emulate src.cpp -o program
-        IQM_SERVER_URL="https://resonance.meetiqm.com/" IQM_QC="<quantum computer>" IQM_SAVE_QPU_QA="<path+filename for QPU architecture file>" ./program
+        IQM_SERVER_URL="https://resonance.iqm.tech/" IQM_QC="<quantum computer>" IQM_SAVE_QPU_QA="<path+filename for QPU architecture file>" ./program
 
 
 To see a complete example, take a look at :ref:`IQM examples <iqm-examples>`.
@@ -161,7 +165,9 @@ Setting the Number of Shots
 Using Credentials Saved in a File
 +++++++++++++++++++++++++++++++++
 
-The preferred way to pass the "API Token" to the IQM backend is through the environment variable ``IQM_TOKEN``. For compatibility the earlier used storage of the "API Token" in a file can still be used as follows:
+This way of providing the "API Token" is deprecated.
+The preferred way to pass the "API Token" to the IQM backend is through the environment variable ``IQM_TOKEN``.
+For backward compatibility the earlier used storage of the "API Token" in a file can still be used as follows:
 
 The previously used ``IQM_TOKENS_FILE`` environment variable can still be used to point to a tokens file but will be ignored if the ``IQM_TOKEN`` variable is set.
 The tokens file cannot be generated by the ``iqmclient`` tool anymore but can be created manually using the "API Token" obtained from the Resonance profile page.
