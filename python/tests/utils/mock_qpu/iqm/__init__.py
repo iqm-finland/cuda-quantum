@@ -128,7 +128,8 @@ def _generate_quantum_architecture(qpu: str) -> bool:
     architectures = {
         "crystal-5": [1, 0, 3, 1, 1, -1],
         "crystal-20": [2, 0, 5, 1, 5, 0, 5, 0, 3, -1],
-        "crystal-54": [2, 0, 5, 2, 7, 1, 8, 1, 9, 0, 8, -1, 7, 0, 5, -1, 3, -1]
+        "crystal-54": [2, 0, 5, 2, 7, 1, 8, 1, 9, 0, 8, -1, 7, 0, 5, -1, 3, -1],
+        "crystal-150": [150, 15]
     }
     if qpu not in architectures:
         return False
@@ -137,6 +138,17 @@ def _generate_quantum_architecture(qpu: str) -> bool:
     qubit_connectivity.clear()
     layout = architectures[qpu]
 
+    if len(layout) == 2:
+        _generate_pattern2_layout(layout)
+    else:
+        _generate_pattern1_layout(layout)
+
+    return True
+
+
+def _generate_pattern1_layout(layout: list[int]):
+    """ Generate a pattern-1 layout. Used on Crystal-5, Crystal-20, Crystal-54.
+    This populates the global variables 'qubits' and 'qubit_connectivity'."""
     # generate the list of two qubit gates
     row_start = 1
     last_row_start = 0
@@ -171,7 +183,32 @@ def _generate_quantum_architecture(qpu: str) -> bool:
     qubit_cnt = row_start - 1
     qubits.extend(f"QB{qb + 1}" for qb in range(qubit_cnt))
 
-    return True
+
+def _generate_pattern2_layout(layout: list[int]):
+    """ Generate a pattern-2 layout. Used on Crystal-150
+    This populates the global variables 'qubits' and 'qubit_connectivity'."""
+    qubit_cnt, height = layout[:2]
+    for qubit in range(1, qubit_cnt + 1):
+        qubits.append(f"QB{qubit}")
+
+        # connect qubits of the same column
+        if (qubit % height) != 0:
+            qubit_connectivity.append([f"QB{qubit}", f"QB{qubit + 1}"])
+
+        # lowest numbered qubit in this column
+        base = qubit - ((qubit - 1) % height)
+
+        # connect to previous column if there is one
+        if (qubit > height) and (((qubit - base) % 2) == 0):
+            # qubit on previous column diagonally down and up
+            down = qubit - height - 1
+            up = qubit - height + 1
+
+            if down > base - height:
+                qubit_connectivity.append([f"QB{qubit}", f"QB{down}"])
+
+            if up < base:
+                qubit_connectivity.append([f"QB{qubit}", f"QB{up}"])
 
 
 class Counts(BaseModel):
