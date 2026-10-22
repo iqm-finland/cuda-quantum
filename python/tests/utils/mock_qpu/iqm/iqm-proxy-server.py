@@ -1,4 +1,4 @@
-# Copyright 2026 IQM developers
+# Copyright 2026 IQM Quantum Computers
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -36,48 +36,80 @@ environment variable 'IQM_SERVER_URL' in the shell in which it is executed.
 
 from os import getenv
 from sys import exit
-from fastapi import FastAPI, Request, Response
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, Request, Response, HTTPException
 import uvicorn
 import httpx
+import logging
 
-
-# Define the REST Server App
-app = FastAPI(title="IQM API Proxy Server", version="V1")
 # One time global configuration
 server: str = ""
 qc: str = ""
 token: str = ""
 port: int = 0
 
+logger = logging.getLogger("uvicorn.error")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    logger.info(f"Configured upstream server: '{server}'")
+    logger.info(f"Configured quantum computer: '{qc}'")
+    app.state.client = httpx.AsyncClient(
+        base_url=server,
+        timeout=httpx.Timeout(20, connect=10),
+        limits=httpx.Limits(max_keepalive_connections=20, keepalive_expiry=30),
+        transport=httpx.AsyncHTTPTransport(retries=2),
+    )
+    yield
+    await app.state.client.aclose()
+
+
+# The REST Server App
+app = FastAPI(title="IQM API Proxy Server", version="V1", lifespan=lifespan)
 
 # List of HTTP header fields to be dropped in requests and responses.
-DROP_FROM_REQ = {"host", "content-length", "connection",
-                 "transfer-encoding", "keep-alive", "upgrade"}
-DROP_FROM_RSP = {"content-encoding", "content-length", "connection",
-                 "transfer-encoding", "keep-alive"}
+DROP_FROM_REQ = {
+    "host", "content-length", "connection", "te", "trailers",
+    "transfer-encoding", "keep-alive", "upgrade", "proxy-authenticate",
+    "proxy-authorization"
+}
+DROP_FROM_RSP = {
+    "content-encoding", "content-length", "connection", "transfer-encoding",
+    "keep-alive"
+}
+
 
 async def _forward_request(request: Request, path: str) -> Response:
     """Forward the request"""
+    client: httpx.AsyncClient = request.app.state.client
+
     # filter and rewrite the header fields
-    headers = httpx.Headers(
-        [(k, v) for k, v in request.headers.items() if k.lower() not in DROP_FROM_REQ]
-    )
+    headers = httpx.Headers([(k, v)
+                             for k, v in request.headers.items()
+                             if k.lower() not in DROP_FROM_REQ])
     if token:
         headers["authorization"] = f"Bearer {token}"
 
     body = await request.body()
 
-    if "circuit" in path:
+    if request.method == "POST":
         print(f"*** {path}\n  {body}\n")
         """ *** TODO: this is the place to modify the circuit JSON *** """
 
-    async with httpx.AsyncClient(base_url=server) as client:
+    try:
         resp = await client.request(
             headers=headers,
             method=request.method,
             url=path,
             content=body,
         )
+    except httpx.ConnectTimeout:
+        raise HTTPException(504, "Timeout connecting to upstream server")
+    except httpx.ReadTimeout:
+        raise HTTPException(504, "Timeout reading from upstream server")
+    except httpx.ConnectError:
+        raise HTTPException(504, "Failed to connect to upstream server")
 
     # print(f"*** Body ***\n{resp.content}\n")
 
@@ -109,10 +141,16 @@ async def _post_job(request: Request) -> Response:
     return await _forward_request(request, path)
 
 
+# initial API
+@app.post("/circuits")
+@app.get("/circuits/{job_id}/status")
+@app.get("/circuits/{job_id}/counts")
+@app.get("/calibration-sets/default/dynamic-quantum-architecture")
+# V1 API
 @app.get("/api/v1/jobs/{job_id}")
 @app.get("/api/v1/jobs/{job_id}/payload")
 @app.get("/api/v1/jobs/{job_id}/artifacts/measurement_counts")
-async def _get_transparent(job_id: str, request: Request) -> Response:
+async def _get_transparent(request: Request) -> Response:
     """Get using the path from request"""
     return await _forward_request(request, request.url.path)
 
@@ -129,8 +167,6 @@ def startProxy():
 
     if not server:
         exit(f"Error: Server not configured - Aborting")
-
-    print(f"Configured upstream server: '{server}' & quantum computer: '{qc}'")
 
     uvicorn.run(app, port=port, host='0.0.0.0', log_level="info")
 
