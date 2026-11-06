@@ -14,10 +14,9 @@
 """Proxy server for the IQM REST API.
 
 Forward requests sent to this server to the configured upstream server.
-Only a subset of the IQM server REST API V1 is implemented. Namely the
-endpoints needed by the CUDA-Q client are implemented here.
+Note: This has not been tested beyond the API endpoints needed by CUDA-Q.
 
-This server is configured with the following environment variables:
+This proxy server is configured with the following environment variables:
 - 'IQM_SERVER_URL': string containing the URL of the upstream server.
   This string must not be empty. If empty the proxy will not start.
 - 'IQM_QUANTUM_COMPUTER': string containing the name of the quantum computer
@@ -93,11 +92,12 @@ async def _forward_request(request: Request, path: str) -> Response:
 
     body = await request.body()
 
-    if request.method == "POST":
+    if request.method == "POST" and "circuit" in path:
         print(f"*** {path}\n  {body}\n")
         """ *** TODO: this is the place to modify the circuit JSON *** """
 
     try:
+        logger.info(f"Forwarding: {request.method} '{path}'")
         resp = await client.request(
             headers=headers,
             method=request.method,
@@ -123,36 +123,56 @@ async def _forward_request(request: Request, path: str) -> Response:
     return response
 
 
-@app.get("/api/v1/calibration-sets/{rqc}/default/dynamic-quantum-architecture")
-async def _get_dynamic_quantum_architecture(request: Request) -> Response:
-    """Get the dynamic quantum architecture"""
-    path = request.url.path
-    if (qc):
-        path = f"api/v1/calibration-sets/{qc}/default/dynamic-quantum-architecture"
-    return await _forward_request(request, path)
-
-
-@app.post("/api/v1/jobs/{rqc}/circuit")
-async def _post_job(request: Request) -> Response:
-    """Post a circuit for execution"""
-    path = request.url.path
-    if (qc):
-        path = f"api/v1/jobs/{qc}/circuit"
-    return await _forward_request(request, path)
-
-
 # initial API
 @app.post("/circuits")
 @app.get("/circuits/{job_id}/status")
 @app.get("/circuits/{job_id}/counts")
 @app.get("/calibration-sets/default/dynamic-quantum-architecture")
 # V1 API
+@app.get("/api/v1/quantum-computers")
+@app.post("/api/v1/jobs/{job_id}/cancel")
+@app.delete("/api/v1/jobs/{job_id}")
 @app.get("/api/v1/jobs/{job_id}")
 @app.get("/api/v1/jobs/{job_id}/payload")
-@app.get("/api/v1/jobs/{job_id}/artifacts/measurement_counts")
+@app.get("/api/v1/jobs/{job_id}/artifacts/{artifact_type}")
+@app.post("/api/v1/iterations")
+@app.post("/api/v1/iterations/{iteration_id}/end")
+@app.get("/api/v1/iterations")
+@app.get("/api/v1/iterations/{iteration_id}")
+@app.get("/api/v1/iterations/{iteration_id}/jobs")
+@app.post("/api/v1/tokens/{id}/revoke")
+@app.post("/api/v1/tokens/current/activate")
+@app.post("/api/v1/tokens/current/refresh")
+@app.get("/api/v1/tokens")
 async def _get_transparent(request: Request) -> Response:
     """Get using the path from request"""
     return await _forward_request(request, request.url.path)
+
+
+# V1 API (with qc)
+@app.post("/api/v1/quantum-computers/{rqc}/timeslots")
+@app.delete("/api/v1/quantum-computers/{rqc}/timeslots")
+@app.get("/api/v1/quantum-computers/{rqc}")
+@app.get("/api/v1/quantum-computers/{rqc}/artifacts/{artifact_type}")
+@app.get("/api/v1/quantum-computers/{rqc}/health")
+@app.get("/api/v1/quantum-computers/{rqc}/limits")
+@app.get("/api/v1/quantum-computers/{rqc}/queue-availability")
+@app.get("/api/v1/quantum-computers/{rqc}/timeslots")
+@app.post("/api/v1/jobs/{rqc}/{job_type}")
+@app.get("/api/v1/calibration-sets/{rqc}/{cal_set}")
+@app.get("/api/v1/calibration-sets/{rqc}/{cal_set}/dynamic-quantum-architecture")
+@app.get("/api/v1/calibration-sets/{rqc}/{cal_set}/metrics")
+async def _get_dynamic_quantum_architecture(request: Request) -> Response:
+    """Forward the incoming request but first rewrite the path if a quantum
+       computer is configured."""
+    path = request.url.path
+    # In V1 API the quantum computer is always the 4th level of a path
+    if (qc):
+        parts = path.split("/")
+        if len(parts) >= 5:
+            parts[4] = qc
+        path = "/".join(parts)
+    return await _forward_request(request, path)
 
 
 def startProxy():
